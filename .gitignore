@@ -3,3 +3,4 @@ binding_notes.txt
 zig-out
 .zig-cache
 assets
+tinyobj_loader_c.h
