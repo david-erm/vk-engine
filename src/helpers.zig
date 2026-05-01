@@ -89,6 +89,21 @@ pub const Vec3 = extern struct {
     pub fn add(v1: Vec3, v2: Vec3) Vec3 {
         return .{ .x = v1.x + v2.x, .y = v1.y + v2.y, .z = v1.z + v2.z };
     }
+
+    pub fn scale(v: Vec3, factor: f32) Vec3 {
+        return .{ .x = v.x * factor, .y = v.y * factor, .z = v.z * factor };
+    }
+
+    pub fn norm(v: Vec3) f32 {
+        return @sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    }
+
+    pub fn normalize(v: Vec3) Vec3 {
+        const mag = v.norm();
+        if (mag > 0) {
+            return .{ .x = v.x / mag, .y = v.y / mag, .z = v.z / mag };
+        } else return .{};
+    }
 };
 pub const Quat = extern struct {
     x: f32 = 0,
@@ -143,7 +158,7 @@ test "sanity check" {
 pub const Context = struct {
     instance: vk.Instance,
     pdevice: vk.pdevice,
-    degive: vk.Device,
+    device: vk.Device,
 };
 
 pub const Buffer = struct {
@@ -178,9 +193,54 @@ pub const Buffer = struct {
     }
 };
 
-pub const Camera = extern struct {
-    pos: Vec4 = .{},
+pub const Pose = extern struct {
+    pos: Vec3 = .{},
+    extra: f32 = 0,
     rot: Quat = .identity,
+};
+
+pub const Camera = struct {
+    const pitch_limit = std.math.pi / 2.0 - 0.1;
+
+    pose: Pose = .{},
+    sens: f32 = 0.1,
+    movespeed: f32 = 10,
+    fov: f32 = 60,
+
+    pub fn mouseInput(cam: *Camera, dT: f32, relative_x: f32, relative_y: f32) void {
+        const old_pitch = cam.pose.extra;
+        const f = dT * cam.sens;
+
+        cam.pose.extra += relative_y * f;
+        if (@abs(cam.pose.extra) > pitch_limit) {
+            const diff = @as(f32, std.math.sign(old_pitch)) * pitch_limit - old_pitch;
+            cam.pose.rot = cam.pose.rot.mul(.fromAngleAxis(diff, .{ .x = 1 }));
+            cam.pose.extra = old_pitch + diff;
+        } else cam.pose.rot = cam.pose.rot.mul(.fromAngleAxis(relative_y * f, .{ .x = 1 }));
+
+        cam.pose.rot = Quat.mul(.fromAngleAxis(-relative_x * f, .{ .y = 1 }), cam.pose.rot);
+        cam.pose.rot = cam.pose.rot.normalize();
+    }
+
+    pub fn moveInput(cam: *Camera, dT: f32, in: [4]bool) void {
+        var axis: Vec3 = .{};
+        const lookup: [4]Vec3 = .{
+            Vec3{ .z = -1 },
+            Vec3{ .z = 1 },
+            Vec3{ .x = 1 },
+            Vec3{ .x = -1 },
+        };
+
+        for (lookup, in) |v, dir| {
+            if (dir) {
+                axis = axis.add(v);
+            }
+        }
+
+        axis = axis.normalize();
+
+        cam.pose.pos = Vec3.add(cam.pose.pos, .rotate(axis.scale(dT * cam.movespeed), cam.pose.rot));
+    }
 };
 
 pub const ShaderDataBuffer = struct {

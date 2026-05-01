@@ -16,13 +16,14 @@ const Vec4 = zkf.Vec4;
 const Mat4 = zkf.Mat4;
 const Quat = zkf.Quat;
 const Vec2 = zkf.Vec2;
+const Pose = zkf.Pose;
 const Camera = zkf.Camera;
 const Texture = zkf.Texture;
 const ShaderDataBuffer = zkf.ShaderDataBuffer;
 
 pub const ShaderData = extern struct {
     projection: Mat4 = .zero,
-    cam: Camera = .{},
+    cam: Pose = .{},
     pos: [3]Vec4 = @splat(.{}),
     quat: Quat = .identity,
     light_pos: Vec4 = .{ .x = 0.0, .y = -4.0, .z = 3.0, .w = 0.0 },
@@ -31,7 +32,7 @@ pub const ShaderData = extern struct {
 
 const max_frames = 2;
 var windowsize: vk.Extent2D = .{ .width = 800, .height = 600 };
-var cam: Camera = .{ .pos = .{ .z = 6.0 }, .rot = .identity };
+var cam: Camera = .{ .pose = .{ .pos = .{ .z = 6.0 }, .rot = .identity } };
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -71,8 +72,13 @@ pub fn main(init: std.process.Init) !void {
         try vk.enumeratePhysicalDevices(instance, &device_count, devices.ptr);
         const device_index: u32 = 0;
         pdevice = devices[device_index];
+        for (devices) |d| {
+            var dp: vk.PhysicalDeviceProperties2 = .{};
+            vk.getPhysicalDeviceProperties2(d, &dp);
+            log.info("dev: {s}", .{dp.properties.deviceName});
+        }
 
-        var device_properties: vk.PhysicalDeviceProperties2 = .{ .properties = std.mem.zeroes(vk.PhysicalDeviceProperties) };
+        var device_properties: vk.PhysicalDeviceProperties2 = .{};
         vk.getPhysicalDeviceProperties2(devices[device_index], &device_properties);
         log.info("Selected device: {s}", .{device_properties.properties.deviceName});
     }
@@ -365,13 +371,6 @@ pub fn main(init: std.process.Init) !void {
         vk.updateDescriptorSets(device, 1, @ptrCast(&write_desc_set), 0, undefined);
     }
 
-    var shader_module: vk.ShaderModule = undefined;
-    defer vk.destroyShaderModule(device, shader_module, null);
-    {
-        const module_ci: vk.ShaderModuleCreateInfo = .{ .pCode = @ptrCast(&shader), .codeSize = shader.len };
-        try vk.createShaderModule(device, &module_ci, null, &shader_module);
-    }
-
     var pipeline_layout: vk.PipelineLayout = undefined;
     defer vk.destroyPipelineLayout(device, pipeline_layout, null);
     {
@@ -389,9 +388,17 @@ pub fn main(init: std.process.Init) !void {
         try vk.createPipelineLayout(device, &ci, null, &pipeline_layout);
     }
 
+    var shader_module: vk.ShaderModule = undefined;
+    defer vk.destroyShaderModule(device, shader_module, null);
+    {
+        const module_ci: vk.ShaderModuleCreateInfo = .{ .pCode = @ptrCast(&shader), .codeSize = shader.len };
+        try vk.createShaderModule(device, &module_ci, null, &shader_module);
+    }
+
     var pipeline: vk.Pipeline = undefined;
     defer vk.destroyPipeline(device, pipeline, null);
     {
+        //comptime gen vertex input
         const vertex_bind: vk.VertexInputBindingDescription = .{
             .binding = 0,
             .stride = @sizeOf(Vertex),
@@ -408,6 +415,7 @@ pub fn main(init: std.process.Init) !void {
             .vertexBindingDescriptionCount = 1,
             .pVertexBindingDescriptions = @ptrCast(&vertex_bind),
         };
+        //pass in shader
         const shader_stages: [2]vk.PipelineShaderStageCreateInfo = .{
             .{ .stage = .{ .vertex = true }, .module = shader_module, .pName = "main" },
             .{ .stage = .{ .fragment = true }, .module = shader_module, .pName = "main" },
@@ -425,7 +433,7 @@ pub fn main(init: std.process.Init) !void {
             .pVertexInputState = &vertex_input,
             .pInputAssemblyState = &.{ .topology = .triangle_list },
             .pViewportState = &.{ .viewportCount = 1, .scissorCount = 1 },
-            .pRasterizationState = &.{ .lineWidth = 1.0 },
+            .pRasterizationState = &.{ .lineWidth = 1.0, .polygonMode = .fill, .cullMode = .{ .back = true } },
             .pMultisampleState = &.{ .rasterizationSamples = .{ .@"1" = true } },
             .pDepthStencilState = &.{ .depthTestEnable = .True, .depthWriteEnable = .True, .depthCompareOp = .less_or_equal },
             .pColorBlendState = &.{ .attachmentCount = 1, .pAttachments = @ptrCast(&blend_attachment) },
@@ -470,7 +478,7 @@ pub fn main(init: std.process.Init) !void {
         last_quat = last_quat.mul(.fromAngleAxis(std.math.pi * 0.5 * dT, .{ .y = 1 })).normalize();
         var shader_data: ShaderData = .{
             .projection = .perspective(std.math.degreesToRadians(60.0), aspect, 0.1, 32.0),
-            .cam = cam,
+            .cam = cam.pose,
             .selected = sel,
             .quat = last_quat,
         };
@@ -597,39 +605,42 @@ pub fn main(init: std.process.Init) !void {
             else => return e,
         };
 
-        var event: sdl.Event = undefined;
-        while (sdl.pollEvent(&event)) {
-            switch (event.type) {
-                .quit => quit = true,
-                .window_resized => recreate_swap = true,
-                .key_down => {
-                    if (event.key.repeat) break;
-                    switch (event.key.scancode) {
-                        .h => sel = (sel + 1) % 3,
-                        .escape => quit = true,
-                        .w => {
-                            cam.pos = .vec4(Vec3.add(cam.pos.xyz(), Vec3.rotate(.{ .z = -100 * dT }, cam.rot)), cam.pos.w);
-                        },
-                        .e => {
-                            cam.rot = cam.rot.mul(.fromAngleAxis(std.math.pi / 4.0, .{ .z = 1 }));
-                        },
-                        else => {},
-                    }
-                },
-                .mouse_motion => {
-                    const angle_lim = std.math.pi / 2.0 - 0.1;
-                    const old_pitch = cam.pos.w;
-                    const sens = 0.2;
-                    cam.pos.w += event.motion.yrel * dT * sens;
-                    if (@abs(cam.pos.w) > angle_lim) {
-                        const diff = @as(f32, std.math.sign(old_pitch)) * angle_lim - old_pitch;
-                        cam.rot = cam.rot.mul(.fromAngleAxis(diff, .{ .x = 1 }));
-                        cam.pos.w = old_pitch + diff;
-                    } else cam.rot = cam.rot.mul(.fromAngleAxis(event.motion.yrel * dT * sens, .{ .x = 1 }));
-                    cam.rot = Quat.mul(.fromAngleAxis(-event.motion.xrel * dT * sens, .{ .y = 1 }), cam.rot);
-                    cam.rot = cam.rot.normalize();
-                },
-                else => {},
+        //input
+        {
+            const keyboard_state = sdl.getKeyboardState();
+            var in: [4]bool = @splat(false);
+            if (keyboard_state[@intFromEnum(sdl.Scancode.w)]) {
+                in[0] = true;
+            }
+            if (keyboard_state[@intFromEnum(sdl.Scancode.s)]) {
+                in[1] = true;
+            }
+            if (keyboard_state[@intFromEnum(sdl.Scancode.d)]) {
+                in[2] = true;
+            }
+            if (keyboard_state[@intFromEnum(sdl.Scancode.a)]) {
+                in[3] = true;
+            }
+            cam.moveInput(dT, in);
+
+            var event: sdl.Event = undefined;
+            while (sdl.pollEvent(&event)) {
+                switch (event.type) {
+                    .quit => quit = true,
+                    .window_resized => recreate_swap = true,
+                    .key_down => {
+                        if (event.key.repeat) break;
+                        switch (event.key.scancode) {
+                            .h => sel = (sel + 1) % 3,
+                            .escape => quit = true,
+                            else => {},
+                        }
+                    },
+                    .mouse_motion => {
+                        cam.mouseInput(dT, event.motion.xrel, event.motion.yrel);
+                    },
+                    else => {},
+                }
             }
         }
 

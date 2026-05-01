@@ -174,11 +174,11 @@ pub const EventType = enum(u32) {
     enum_padding = 0x7fffffff,
 };
 
-const WindowID = enum(u32) { _ };
-const KeyboardID = enum(u32) { _ };
-const MouseID = enum(u32) { _ };
+pub const WindowID = enum(u32) { _ };
+pub const KeyboardID = enum(u32) { _ };
+pub const MouseID = enum(u32) { _ };
 
-const Scancode = enum(u32) {
+pub const Scancode = enum(u32) {
     unknown = 0,
     a = 4,
     b = 5,
@@ -430,7 +430,7 @@ const Scancode = enum(u32) {
     count = 512,
 };
 
-const Keymod = packed struct(u16) {
+pub const Keymod = packed struct(u16) {
     lshift: bool = false,
     rshift: bool = false,
     level5: bool = false,
@@ -447,7 +447,7 @@ const Keymod = packed struct(u16) {
     scroll: bool = false,
 };
 
-const KeyboardEvent = extern struct {
+pub const KeyboardEvent = extern struct {
     type: EventType,
     reserved: u32,
     timestamp: u64,
@@ -495,6 +495,10 @@ pub const Window = *Window_t;
 
 //binds
 
+//input
+pub const pollEvent = @extern(*const fn (event: *Event) callconv(.c) bool, .{ .name = "SDL_PollEvent" });
+pub const getKeyboardState = @extern(*const fn () callconv(.c) *[@intFromEnum(Scancode.count)]bool, .{ .name = "SDL_GetKeyboardState" });
+
 pub const getError = @extern(*const fn () callconv(.c) [*:0]const u8, .{ .name = "SDL_GetError" });
 
 pub const raw_init = @extern(*const fn (InitFlags) callconv(.c) bool, .{ .name = "SDL_Init" });
@@ -516,7 +520,7 @@ pub fn createWindow(title: [*:0]const u8, w: i32, h: i32, flags: WindowFlags) er
 pub const destroyWindow = @extern(*const fn (window: *Window) callconv(.c) void, .{ .name = "SDL_DestroyWindow" });
 
 pub const quitSubsystem = @extern(*const fn (flags: InitFlags) callconv(.c) void, .{ .name = "SDL_QuitSubSystem" });
-pub const pollEvent = @extern(*const fn (event: *Event) callconv(.c) bool, .{ .name = "SDL_PollEvent" });
+
 pub const getWindowSize = @extern(*const fn (window: Window, w: *i32, h: *i32) callconv(.c) bool, .{ .name = "SDL_GetWindowSize" });
 pub const setWindowRelativeMouseMode = @extern(*const fn (window: Window, enable: bool) callconv(.c) bool, .{ .name = "SDL_SetWindowRelativeMouseMode" });
 pub const deinit = @extern(*const fn () callconv(.c) void, .{ .name = "SDL_Quit" });

@@ -1,0 +1,7 @@
+struct Render {
+	opaque:
+	opaque_pipeline:
+	translucent:
+	translucent_pipeline:
+	
+}
