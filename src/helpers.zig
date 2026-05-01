@@ -140,15 +140,48 @@ test "sanity check" {
     std.debug.print("{}\n", .{v2});
 }
 
+pub const Context = struct {
+    instance: vk.Instance,
+    pdevice: vk.pdevice,
+    degive: vk.Device,
+};
+
+pub const Buffer = struct {
+    handle: vk.Buffer,
+    alloc: vma.Allocation,
+    alloci: vma.AllocationInfo,
+
+    pub fn deinit(buff: Buffer, vka: vma.Allocator) void {
+        vma.destroyBuffer(vka, buff.handle, buff.alloc);
+    }
+
+    pub fn init(vka: vma.Allocator, ci: vk.BufferCreateInfo, ai: vma.AllocationCreateInfo) Buffer {
+        var ret: Buffer = undefined;
+        _ = vma.createBuffer(vka, &ci, &ai, &ret.handle, &ret.alloc, &ret.alloci);
+        return ret;
+    }
+
+    pub fn write(buff: Buffer, offset: u64, data: anytype) void {
+        switch (@typeInfo(@TypeOf(data))) {
+            .pointer => {
+                @memcpy(@as([*]u8, @ptrCast(@alignCast(buff.alloci.pMappedData.?))) + offset, std.mem.sliceAsBytes(data));
+            },
+            .@"struct", .array => {
+                @memcpy(@as([*]u8, @ptrCast(@alignCast(buff.alloci.pMappedData.?))) + offset, std.mem.asBytes(&data));
+            },
+            else => @compileError("needs to be either struct or slice"),
+        }
+    }
+
+    pub fn address(buff: Buffer, device: vk.Device) vk.DeviceAddress {
+        return vk.getBufferDeviceAddress(device, &.{ .buffer = buff.handle });
+    }
+};
+
 pub const Camera = extern struct {
     pos: Vec4 = .{},
     rot: Quat = .identity,
 };
-
-// pub const Camera = struct {
-//     frame: Frame,
-//     current_yaw: f32,
-// };
 
 pub const ShaderDataBuffer = struct {
     allocInfo: vma.AllocationInfo,
@@ -191,17 +224,16 @@ pub fn loadImage(a: std.mem.Allocator, filename: [:0]const u8, device: vk.Device
     const alloc_ci: vma.AllocationCreateInfo = .{ .usage = .auto };
     _ = vma.createImage(vka, &image_ci, &alloc_ci, &info.image, &info.alon, null);
 
-    var img_buffer: vk.Buffer = undefined;
-    var img_buffer_alloc: vma.Allocation = undefined;
-    var img_buffer_alloci: vma.AllocationInfo = undefined;
-    const img_buffer_ci: vk.BufferCreateInfo = .{
-        .size = texture.dataSize,
-        .usage = .{ .transfer_src = true },
-    };
-    const img_buffer_aci: vma.AllocationCreateInfo = .{ .usage = .auto, .flags = .{ .host_access_sequential_write_bit = true, .mapped_bit = true } };
-    _ = vma.createBuffer(vka, &img_buffer_ci, &img_buffer_aci, &img_buffer, &img_buffer_alloc, &img_buffer_alloci);
-    defer vma.destroyBuffer(vka, img_buffer, img_buffer_alloc);
-    @memcpy(@as([*]u8, @ptrCast(img_buffer_alloci.pMappedData.?)), texture.pData[0..texture.dataSize]);
+    const img_buffer = Buffer.init(
+        vka,
+        .{ .size = texture.dataSize, .usage = .{ .transfer_src = true } },
+        .{ .usage = .auto, .flags = .{
+            .mapped_bit = true,
+            .host_access_sequential_write_bit = true,
+        } },
+    );
+    defer img_buffer.deinit(vka);
+    img_buffer.write(0, texture.pData[0..texture.dataSize]);
 
     const fence_ci: vk.FenceCreateInfo = .{};
     var fence: vk.Fence = undefined;
@@ -252,7 +284,7 @@ pub fn loadImage(a: std.mem.Allocator, filename: [:0]const u8, device: vk.Device
             },
         };
     }
-    vk.cmdCopyBufferToImage(cmd_buf, img_buffer, info.image, .transfer_dst_optimal, texture.numLevels, copy_regions.ptr);
+    vk.cmdCopyBufferToImage(cmd_buf, img_buffer.handle, info.image, .transfer_dst_optimal, texture.numLevels, copy_regions.ptr);
 
     const texread_barrier: vk.ImageMemoryBarrier2 = .{
         .srcStageMask = .{ .all_transfer = true },

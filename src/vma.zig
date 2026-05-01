@@ -91,6 +91,9 @@ pub const AllocationCreateInfo = extern struct {
     pool: ?Pool = null,
     pUserData: ?*anyopaque = null,
     priority: f32 = 0,
+
+    //some easy defaults
+    pub const mapped_vram: AllocationCreateInfo = .{ .usage = .auto, .flags = .{ .mapped_bit = true, .host_access_sequential_write_bit = true, .host_access_allow_transfer_instead_bit = true } };
 };
 
 pub const AllocationInfo = extern struct {

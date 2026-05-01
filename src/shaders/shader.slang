@@ -35,7 +35,7 @@ VSOutput main(VSInput input, uniform ShaderData *shaderData, uint instanceIndex 
     Camera cam = shaderData->cam;
 
     float3 fragPos = rotate(rotate(input.Pos, shaderData->quat) + translate.xyz - cam.pos.xyz, conj(cam.rot)) ;
-    output.Normal = rotate(input.Normal, qmul(shaderData->quat, conj(cam.rot)));
+    output.Normal = rotate(input.Normal, qmul(conj(cam.rot), shaderData->quat));
     output.LightVec = rotate(shaderData->lightPos.xyz - cam.pos.xyz, conj(cam.rot)) - fragPos;
 
     output.Pos = mul(shaderData->projection, float4(fragPos, 1.0));
@@ -55,11 +55,11 @@ float4 main(VSOutput input)
     float3 V = normalize(input.ViewVec);
     float3 R = reflect(-L, N);
     float3 diffuse = max(dot(N, L), 0.0025);
-    float3 specular = pow(max(dot(R, V), 0.00001), 16.0) * 0.75;
+    float3 specular = pow(max(dot(R, V), 0.00001), 64.0) * 0.75;
 
 
     float3 color = textures[NonUniformResourceIndex(input.instanceIndex)].Sample(input.UV).rgb * input.factor;
-    return float4(diffuse * color.rgb + specular, 1.0);
+    return float4(color.rgb * (diffuse + float3(0.1)) + specular, 1.0);
     // return float4(N, 1.0);
 }
 

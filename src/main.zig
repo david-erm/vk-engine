@@ -2,7 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 const log = std.log.scoped(.howtovulkan);
 
-const helpers = @import("helpers.zig");
+const zkf = @import("helpers.zig");
 const vk = @import("vk.zig");
 const sdl = @import("sdl.zig");
 const vma = @import("vma.zig");
@@ -10,22 +10,22 @@ const ktx = @import("ktx.zig");
 
 const shader align(@alignOf(u32)) = @embedFile("shader").*;
 
-const Vertex = helpers.Vertex;
-const Vec3 = helpers.Vec3;
-const Vec4 = helpers.Vec4;
-const Mat4 = helpers.Mat4;
-const Quat = helpers.Quat;
-const Vec2 = helpers.Vec2;
-const Camera = helpers.Camera;
-const Texture = helpers.Texture;
-const ShaderDataBuffer = helpers.ShaderDataBuffer;
+const Vertex = zkf.Vertex;
+const Vec3 = zkf.Vec3;
+const Vec4 = zkf.Vec4;
+const Mat4 = zkf.Mat4;
+const Quat = zkf.Quat;
+const Vec2 = zkf.Vec2;
+const Camera = zkf.Camera;
+const Texture = zkf.Texture;
+const ShaderDataBuffer = zkf.ShaderDataBuffer;
 
 pub const ShaderData = extern struct {
     projection: Mat4 = .zero,
     cam: Camera = .{},
     pos: [3]Vec4 = @splat(.{}),
     quat: Quat = .identity,
-    light_pos: Vec4 = .{ .x = 0.0, .y = 0.0, .z = 3.0, .w = 0.0 },
+    light_pos: Vec4 = .{ .x = 0.0, .y = -4.0, .z = 3.0, .w = 0.0 },
     selected: u32 = 1,
 };
 
@@ -141,7 +141,7 @@ pub fn main(init: std.process.Init) !void {
     var window = try sdl.createWindow("How to vulkan", @intCast(windowsize.width), @intCast(windowsize.height), .{
         .vulkan = true,
         .resizable = true,
-        .fullscreen = false,
+        .fullscreen = true,
     });
     defer sdl.destroyWindow(&window);
     _ = sdl.setWindowRelativeMouseMode(window, true);
@@ -242,24 +242,22 @@ pub fn main(init: std.process.Init) !void {
         try vk.createImageView(device, &depthImageViewCI, null, &depth_image_view);
     }
 
-    const suzanne = try helpers.loadObj(arena, &io, "assets/suzanne.obj");
+    const suzanne = try zkf.loadObj(arena, &io, "assets/suzanne.obj");
 
-    var vBuffer: vk.Buffer = undefined;
-    var bufferAllocInfo: vma.AllocationInfo = undefined;
     const vBufferSize: vk.DeviceSize = @sizeOf(Vertex) * suzanne.vertices.items.len;
     const iBufferSize: vk.DeviceSize = @sizeOf(u16) * suzanne.indices.items.len;
-    var bufferAlloc: vma.Allocation = undefined;
-    defer vma.destroyBuffer(alloc, vBuffer, bufferAlloc);
-    {
-        const bufferCI: vk.BufferCreateInfo = .{
-            .size = vBufferSize + iBufferSize,
-            .usage = .{ .index_buffer = true, .vertex_buffer = true },
-        };
-        const bufferAllocCI: vma.AllocationCreateInfo = .{ .flags = .{ .host_access_sequential_write_bit = true, .mapped_bit = true, .host_access_allow_transfer_instead_bit = true }, .usage = .auto };
-        _ = vma.createBuffer(alloc, &bufferCI, &bufferAllocCI, &vBuffer, &bufferAlloc, &bufferAllocInfo);
-        @memcpy(@as([*]Vertex, @ptrCast(@alignCast(bufferAllocInfo.pMappedData))), suzanne.vertices.items);
-        @memcpy(@as([*]u16, @ptrCast(@alignCast(@as([*]u8, @ptrCast(bufferAllocInfo.pMappedData)) + vBufferSize))), suzanne.indices.items);
-    }
+    const suzanne_buffer = zkf.Buffer.init(alloc, .{ .size = vBufferSize + iBufferSize, .usage = .{ .index_buffer = true, .vertex_buffer = true } }, .mapped_vram);
+    defer suzanne_buffer.deinit(alloc);
+    suzanne_buffer.write(0, suzanne.vertices.items);
+    suzanne_buffer.write(vBufferSize, suzanne.indices.items);
+
+    const plane_buffer = zkf.Buffer.init(alloc, .{
+        .size = @sizeOf(f32) * plane_vertices.len + @sizeOf(u16) * quad_indices.len,
+        .usage = .{ .index_buffer = true, .vertex_buffer = true },
+    }, .mapped_vram);
+    defer plane_buffer.deinit(alloc);
+    plane_buffer.write(0, plane_vertices);
+    plane_buffer.write(128, quad_indices);
 
     var fences: [max_frames]vk.Fence = undefined;
     var presentSmp: [max_frames]vk.Semaphore = undefined;
@@ -306,7 +304,7 @@ pub fn main(init: std.process.Init) !void {
         var buf: [128]u8 = @splat(0);
         const filename = try std.fmt.bufPrintSentinel(&buf, "assets/suzanne{}.ktx", .{i}, 0);
 
-        texture.* = try helpers.loadImage(arena, filename, device, alloc, queue, commandPool);
+        texture.* = try zkf.loadImage(arena, filename, device, alloc, queue, commandPool);
 
         texture_descriptors[i] = .{
             .sampler = texture.sampler,
@@ -437,22 +435,19 @@ pub fn main(init: std.process.Init) !void {
         try vk.createGraphicsPipelines(device, null, 1, @ptrCast(&ci), null, @ptrCast(&pipeline));
     }
 
-    var shader_buffers: [max_frames]ShaderDataBuffer = undefined;
+    var shader_buffers: [max_frames]zkf.Buffer = undefined;
     defer for (shader_buffers) |buffer| {
-        vma.destroyBuffer(alloc, buffer.buffer, buffer.alloc);
+        buffer.deinit(alloc);
     };
     for (0..max_frames) |i| {
         const uBufferCI: vk.BufferCreateInfo = .{
             .size = @sizeOf(ShaderData),
             .usage = .{ .shader_device_address = true },
         };
-        const uBufAllocCI: vma.AllocationCreateInfo = .{ .flags = .{ .host_access_sequential_write_bit = true, .mapped_bit = true, .host_access_allow_transfer_instead_bit = true }, .usage = .auto };
-        _ = vma.createBuffer(alloc, &uBufferCI, &uBufAllocCI, &shader_buffers[i].buffer, &shader_buffers[i].alloc, &shader_buffers[i].allocInfo);
-        const uBufDevAddrInfo: vk.BufferDeviceAddressInfo = .{ .buffer = shader_buffers[i].buffer };
-        shader_buffers[i].address = vk.getBufferDeviceAddress(device, &uBufDevAddrInfo);
+        shader_buffers[i] = .init(alloc, uBufferCI, .mapped_vram);
     }
 
-    var last_time: i64 = std.Io.Timestamp.now(io, .awake).toMicroseconds();
+    var last_time = Io.Clock.now(.real, io).toMicroseconds();
     var quit: bool = false;
     var frame_index: usize = 0;
     var image_index: u32 = 0;
@@ -462,9 +457,9 @@ pub fn main(init: std.process.Init) !void {
     while (!quit) {
         try vk.waitForFences(device, 1, @ptrCast(&fences[frame_index]), .True, std.math.maxInt(u64));
         try vk.resetFences(device, 1, @ptrCast(&fences[frame_index]));
-        const elasped: f32 = @floatFromInt(std.Io.Timestamp.now(io, .awake).toMicroseconds() - last_time);
+        const elasped: f32 = @floatFromInt(Io.Clock.now(.real, io).toMicroseconds() - last_time);
+        last_time = Io.Clock.now(.real, io).toMicroseconds();
         const dT = elasped / 1000000.0;
-        last_time = std.Io.Timestamp.now(io, .awake).toMicroseconds();
 
         vk.acquireNextImageKHR(device, swapchain, std.math.maxInt(u64), presentSmp[frame_index], null, &image_index) catch |e| switch (e) {
             error.error_out_of_dateKHR, error.suboptimalKHR => recreate_swap = true,
@@ -481,10 +476,10 @@ pub fn main(init: std.process.Init) !void {
         };
         for (0..3) |i| {
             const idx: f32 = @floatFromInt(i);
-            const pos: Vec3 = .{ .x = (idx - 1.0) * 3.0, .y = 0.0, .z = 0.0 };
+            const pos: Vec3 = .{ .x = (idx - 1.0) * 3.0, .y = -(idx), .z = 0.0 };
             shader_data.pos[i] = .vec4(pos, 0);
         }
-        @memcpy(@as([*]u8, @ptrCast(shader_buffers[frame_index].allocInfo.pMappedData.?)), std.mem.asBytes(&shader_data));
+        shader_buffers[frame_index].write(0, shader_data);
 
         const cb: vk.CommandBuffer = command_buffers[frame_index];
         try vk.resetCommandBuffer(cb, .{});
@@ -549,11 +544,17 @@ pub fn main(init: std.process.Init) !void {
                 const scissor: vk.Rect2D = .{ .extent = windowsize };
                 vk.cmdSetScissor(cb, 0, 1, @ptrCast(&scissor));
                 vk.cmdBindPipeline(cb, .graphics, pipeline);
+                //textures
                 vk.cmdBindDescriptorSets(cb, .graphics, pipeline_layout, 0, 1, @ptrCast(&desc_set), 0, undefined);
-                vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&vBuffer), &.{0});
-                vk.cmdBindIndexBuffer(cb, vBuffer, vBufferSize, .uint16);
-                vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), @ptrCast(&shader_buffers[frame_index].address));
+
+                vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&suzanne_buffer.handle), &.{0});
+                vk.cmdBindIndexBuffer(cb, suzanne_buffer.handle, vBufferSize, .uint16);
+                vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&shader_buffers[frame_index].address(device)));
                 vk.cmdDrawIndexed(cb, @intCast(suzanne.indices.items.len), 3, 0, 0, 0);
+
+                vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&plane_buffer.handle), &.{0});
+                vk.cmdBindIndexBuffer(cb, plane_buffer.handle, @sizeOf(f32) * plane_vertices.len, .uint16);
+                vk.cmdDrawIndexed(cb, @intCast(quad_indices.len), 1, 0, 0, 0);
             }
 
             const present_barrier: vk.ImageMemoryBarrier2 = .{
@@ -618,13 +619,14 @@ pub fn main(init: std.process.Init) !void {
                 .mouse_motion => {
                     const angle_lim = std.math.pi / 2.0 - 0.1;
                     const old_pitch = cam.pos.w;
-                    cam.pos.w += event.motion.yrel * dT;
+                    const sens = 0.2;
+                    cam.pos.w += event.motion.yrel * dT * sens;
                     if (@abs(cam.pos.w) > angle_lim) {
                         const diff = @as(f32, std.math.sign(old_pitch)) * angle_lim - old_pitch;
                         cam.rot = cam.rot.mul(.fromAngleAxis(diff, .{ .x = 1 }));
                         cam.pos.w = old_pitch + diff;
-                    } else cam.rot = cam.rot.mul(.fromAngleAxis(event.motion.yrel * dT, .{ .x = 1 }));
-                    cam.rot = Quat.mul(.fromAngleAxis(-event.motion.xrel * dT, .{ .y = 1 }), cam.rot);
+                    } else cam.rot = cam.rot.mul(.fromAngleAxis(event.motion.yrel * dT * sens, .{ .x = 1 }));
+                    cam.rot = Quat.mul(.fromAngleAxis(-event.motion.xrel * dT * sens, .{ .y = 1 }), cam.rot);
                     cam.rot = cam.rot.normalize();
                 },
                 else => {},
@@ -681,3 +683,15 @@ pub fn main(init: std.process.Init) !void {
 
     try vk.deviceWaitIdle(device);
 }
+
+const quad_indices: [6]u16 = .{
+    0, 1, 2,
+    2, 3, 0,
+};
+
+const plane_vertices: [32]f32 = .{
+    -10.0, 1.0, 10.0,  0.0, 1.0, 0.0, 0.0, 1.0,
+    10.0,  1.0, 10.0,  0.0, 1.0, 0.0, 1.0, 1.0,
+    10.0,  1.0, -10.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+    -10.0, 1.0, -10.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+};
