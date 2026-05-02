@@ -24,14 +24,13 @@ const ShaderDataBuffer = zkf.ShaderDataBuffer;
 pub const ShaderData = extern struct {
     projection: Mat4 = .zero,
     cam: Pose = .{},
-    pos: [3]Vec4 = @splat(.{}),
-    quat: Quat = .identity,
+    poses: [5]Pose = @splat(.{}),
     light_pos: Vec4 = .{ .x = 0.0, .y = -4.0, .z = 3.0, .w = 0.0 },
     selected: u32 = 1,
 };
 
 const max_frames = 2;
-var cam: Camera = .{ .pose = .{ .pos = .{ .z = 6.0 }, .rot = .identity } };
+var cam: Camera = .{ .pose = .{ .pos = .{ .z = 6.0 }, .rot = .identity, .extra = 0 } };
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -45,7 +44,7 @@ pub fn main(init: std.process.Init) !void {
     _ = sdl.setWindowRelativeMouseMode(rctx.window, true);
 
     const suzanne = try zkf.loadObj(arena, &io, "assets/suzanne.obj");
-    // const cube = try zkf.loadObj(arena, io, "assets/cube.obj");
+    const cube = try zkf.loadObj(arena, &io, "assets/cube.obj");
 
     const vBufferSize: vk.DeviceSize = @sizeOf(Vertex) * suzanne.vertices.items.len;
     const iBufferSize: vk.DeviceSize = @sizeOf(u32) * suzanne.indices.items.len;
@@ -62,12 +61,13 @@ pub fn main(init: std.process.Init) !void {
     plane_buffer.write(0, plane_vertices);
     plane_buffer.write(@sizeOf(f32) * plane_vertices.len, quad_indices);
 
-    // const cube_buffer = zkf.Buffer.init(ctx.vka, .{
-    //     .size = @sizeOf(Vertex) * cube.vertices.items.len + @sizeOf(u32) * cube.indices.items.len,
-    //     .usage = .{ .index_buffer = true, .vertex_buffer = true },
-    // }, .mapped_vram);
-    // cube_buffer.write(0, cube.vertices.items);
-    // cube_buffer.write(@sizeOf(Vertex) * cube.vertices.items.len, cube.indices.items.len);
+    const cube_buffer = zkf.Buffer.init(ctx.vka, .{
+        .size = @sizeOf(Vertex) * cube.vertices.items.len + @sizeOf(u32) * cube.indices.items.len,
+        .usage = .{ .index_buffer = true, .vertex_buffer = true },
+    }, .mapped_vram);
+    defer cube_buffer.deinit(ctx.vka);
+    cube_buffer.write(0, cube.vertices.items);
+    cube_buffer.write(@sizeOf(Vertex) * cube.vertices.items.len, cube.indices.items);
 
     var commandPool: vk.CommandPool = undefined;
     var command_buffers: [max_frames]vk.CommandBuffer = undefined;
@@ -79,15 +79,24 @@ pub fn main(init: std.process.Init) !void {
         try vk.allocateCommandBuffers(ctx.device, &cmdBufferCI, &command_buffers);
     }
 
+    var texture_descriptors: [4]vk.DescriptorImageInfo = undefined;
+
+    const skybox = try zkf.loadImage(arena, "assets/skybox.ktx2", ctx.device, ctx.vka, ctx.queue, commandPool);
+    defer vma.destroyImage(ctx.vka, skybox.image, skybox.alon);
+    defer vk.destroyImageView(ctx.device, skybox.view, null);
+    defer vk.destroySampler(ctx.device, skybox.sampler, null);
+    texture_descriptors[3].imageLayout = .read_only_optimal;
+    texture_descriptors[3].sampler = skybox.sampler;
+    texture_descriptors[3].imageView = skybox.view;
+
     //textures
-    var texture_descriptors: [3]vk.DescriptorImageInfo = undefined;
     var textures: [3]Texture = undefined;
     defer for (textures) |texture| {
         vk.destroySampler(ctx.device, texture.sampler, null);
         vk.destroyImageView(ctx.device, texture.view, null);
         vma.destroyImage(ctx.vka, texture.image, texture.alon);
     };
-    for (&textures, 0..) |*texture, i| {
+    for ((&textures)[0..3], 0..) |*texture, i| {
         var buf: [128]u8 = @splat(0);
         const filename = try std.fmt.bufPrintSentinel(&buf, "assets/suzanne{}.ktx", .{i}, 0);
 
@@ -103,7 +112,7 @@ pub fn main(init: std.process.Init) !void {
     var desc_layout: vk.DescriptorSetLayout = undefined;
     defer vk.destroyDescriptorSetLayout(ctx.device, desc_layout, null);
     {
-        const desc_flags: vk.DescriptorBindingFlags = .{ .variable_descriptor_count = true };
+        const desc_flags: vk.DescriptorBindingFlags = .{ .variable_descriptor_count = false, .update_after_bind = true };
         const desc_bind_flags: vk.DescriptorSetLayoutBindingFlagsCreateInfo = .{ .pBindingFlags = @ptrCast(&desc_flags), .bindingCount = 1 };
         const desc_layout_bind_tex: vk.DescriptorSetLayoutBinding = .{
             .binding = 0,
@@ -115,6 +124,7 @@ pub fn main(init: std.process.Init) !void {
             .pNext = &desc_bind_flags,
             .pBindings = @ptrCast(&desc_layout_bind_tex),
             .bindingCount = 1,
+            .flags = .{ .update_after_bind_pool = true },
         };
         try vk.createDescriptorSetLayout(ctx.device, &desc_layout_ci, null, &desc_layout);
     }
@@ -123,7 +133,7 @@ pub fn main(init: std.process.Init) !void {
     defer vk.destroyDescriptorPool(ctx.device, desc_pool, null);
     {
         const pool_size: vk.DescriptorPoolSize = .{ .descriptorCount = @intCast(texture_descriptors.len), .type = .combined_image_sampler };
-        const pool_ci: vk.DescriptorPoolCreateInfo = .{ .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = @ptrCast(&pool_size) };
+        const pool_ci: vk.DescriptorPoolCreateInfo = .{ .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = @ptrCast(&pool_size), .flags = .{ .update_after_bind = true } };
         try vk.createDescriptorPool(ctx.device, &pool_ci, null, &desc_pool);
     }
 
@@ -243,6 +253,7 @@ pub fn main(init: std.process.Init) !void {
     var recreate_swap: bool = false;
     var sel: u32 = 0;
     var last_quat: Quat = .identity;
+    var shader_data: ShaderData = .{};
     while (!quit) {
         try vk.waitForFences(ctx.device, 1, @ptrCast(&rctx.fences[frame_index]), .True, std.math.maxInt(u64));
         try vk.resetFences(ctx.device, 1, @ptrCast(&rctx.fences[frame_index]));
@@ -257,17 +268,26 @@ pub fn main(init: std.process.Init) !void {
 
         const aspect = @as(f32, @floatFromInt(rctx.windowsize.width)) / @as(f32, @floatFromInt(rctx.windowsize.height));
         last_quat = last_quat.mul(.fromAngleAxis(std.math.pi * 0.5 * dT, .{ .y = 1 })).normalize();
-        var shader_data: ShaderData = .{
-            .projection = .perspective(cam.fov, aspect, 0.1, 32.0),
-            .cam = cam.pose,
-            .selected = sel,
-            .quat = last_quat,
-        };
-        for (0..3) |i| {
+
+        shader_data.projection = .perspective(cam.fov, aspect, 0.1, 32.0);
+        shader_data.cam = cam.pose;
+        shader_data.selected = sel;
+        for ((&shader_data.poses)[0..3], 0..) |*pose, i| {
             const idx: f32 = @floatFromInt(i);
             const pos: Vec3 = .{ .x = (idx - 1.0) * 3.0, .y = -(idx), .z = 0.0 };
-            shader_data.pos[i] = .vec4(pos, 1);
+            const lookup: [4]Vec3 = .{
+                Vec3{ .z = @sin(dT) },
+                Vec3{ .z = 1 },
+                Vec3{ .x = 1 },
+                Vec3{ .x = -1 },
+            };
+
+            pose.pos = pos;
+            pose.extra = 1.0;
+            pose.rot = pose.rot.mul(.fromAngleAxis(std.math.pi * 0.5 * dT, lookup[i])).normalize();
         }
+        shader_data.poses[4].pos = .{ .z = -2 };
+
         shader_buffers[frame_index].write(0, shader_data);
 
         const cb: vk.CommandBuffer = command_buffers[frame_index];
@@ -343,7 +363,11 @@ pub fn main(init: std.process.Init) !void {
 
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&plane_buffer.handle), &.{0});
                 vk.cmdBindIndexBuffer(cb, plane_buffer.handle, @sizeOf(f32) * plane_vertices.len, .uint16);
-                vk.cmdDrawIndexed(cb, @intCast(quad_indices.len), 1, 0, 0, 0);
+                vk.cmdDrawIndexed(cb, @intCast(quad_indices.len), 1, 0, 0, 3);
+
+                vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&cube_buffer.handle), &.{0});
+                vk.cmdBindIndexBuffer(cb, cube_buffer.handle, @sizeOf(Vertex) * cube.vertices.items.len, .uint32);
+                vk.cmdDrawIndexed(cb, @intCast(cube.indices.items.len), 1, 0, 0, 4);
             }
 
             const present_barrier: vk.ImageMemoryBarrier2 = .{
@@ -440,8 +464,8 @@ const quad_indices: [6]u16 = .{
 };
 
 const plane_vertices: [32]f32 = .{
-    -10.0, 1.0, 10.0,  0.0, 1.0, 0.0, 0.0, 1.0,
-    10.0,  1.0, 10.0,  0.0, 1.0, 0.0, 1.0, 1.0,
-    10.0,  1.0, -10.0, 0.0, 1.0, 0.0, 1.0, 0.0,
-    -10.0, 1.0, -10.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    -10.0, 2.0, 10.0,  0.0, 1.0, 0.0, 0.0, 1.0,
+    10.0,  2.0, 10.0,  0.0, 1.0, 0.0, 1.0, 1.0,
+    10.0,  2.0, -10.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+    -10.0, 2.0, -10.0, 0.0, 1.0, 0.0, 0.0, 0.0,
 };

@@ -19,7 +19,15 @@ public float3 rotate(float3 v, float4 q) {
 
 //Struct definitions
 
-public struct Camera {
+public struct Pose {
     public float4 pos;
     public float4 rot;
+};
+
+public struct ShaderData {
+    public float4x4 projection;
+    public Pose cam;
+    public Pose poses[5];
+    public float4 lightPos;
+    public uint32_t selected;
 };

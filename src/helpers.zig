@@ -233,6 +233,7 @@ pub const Context = struct {
             var enableVK12Features: vk.PhysicalDeviceVulkan12Features = .{
                 .descriptorIndexing = .True,
                 .shaderSampledImageArrayNonUniformIndexing = .True,
+                .descriptorBindingSampledImageUpdateAfterBind = .True,
                 .descriptorBindingVariableDescriptorCount = .True,
                 .runtimeDescriptorArray = .True,
                 .bufferDeviceAddress = .True,
@@ -529,14 +530,14 @@ pub const Buffer = struct {
 
 pub const Pose = extern struct {
     pos: Vec3 = .{},
-    extra: f32 = 0,
+    extra: f32 = 1,
     rot: Quat = .identity,
 };
 
 pub const Camera = struct {
     const pitch_limit = std.math.pi / 2.0 - 0.1;
 
-    pose: Pose = .{},
+    pose: Pose = .{ .extra = 0 },
     sens: f32 = 0.1,
     movespeed: f32 = 10,
     fov: f32 = std.math.pi / 3.0,
@@ -604,7 +605,7 @@ pub fn loadImage(a: std.mem.Allocator, filename: [:0]const u8, device: vk.Device
     var info: Texture = undefined;
     const format = texture.getVkFormat();
 
-    const image_ci: vk.ImageCreateInfo = .{
+    var image_ci: vk.ImageCreateInfo = .{
         .arrayLayers = texture.numLayers,
         .imageType = @enumFromInt(texture.numDimensions - 1),
         .format = format,
@@ -615,8 +616,15 @@ pub fn loadImage(a: std.mem.Allocator, filename: [:0]const u8, device: vk.Device
         .usage = .{ .transfer_dst = true, .sampled = true },
         .initialLayout = .undefined,
     };
+
+    if (texture.isCubemap) {
+        image_ci.arrayLayers = texture.numFaces;
+        image_ci.flags.cube_compatible = true;
+    }
+
     const alloc_ci: vma.AllocationCreateInfo = .{ .usage = .auto };
     _ = vma.createImage(vka, &image_ci, &alloc_ci, &info.image, &info.alon, null);
+    errdefer vma.destroyImage(vka, info.image, info.alon);
 
     const img_buffer = Buffer.init(
         vka,
@@ -650,8 +658,8 @@ pub fn loadImage(a: std.mem.Allocator, filename: [:0]const u8, device: vk.Device
         .image = info.image,
         .subresourceRange = .{
             .aspectMask = .{ .color = true },
-            .levelCount = texture.numLevels,
-            .layerCount = texture.numLayers,
+            .levelCount = image_ci.mipLevels,
+            .layerCount = image_ci.arrayLayers,
         },
     };
     var barrier_texinfo: vk.DependencyInfo = .{
@@ -660,25 +668,29 @@ pub fn loadImage(a: std.mem.Allocator, filename: [:0]const u8, device: vk.Device
     };
     vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
 
-    const copy_regions = try a.alloc(vk.BufferImageCopy, texture.numLevels);
+    const copy_regions = try a.alloc(vk.BufferImageCopy, image_ci.mipLevels * image_ci.arrayLayers);
     defer a.free(copy_regions);
-    for (0..texture.numLevels) |j| {
-        const level: u32 = @intCast(j);
-        copy_regions[j] = .{
-            .bufferOffset = try texture.getImageOffset(level, 0, 0),
-            .imageSubresource = .{
-                .aspectMask = .{ .color = true },
-                .mipLevel = level,
-                .layerCount = texture.numLayers,
-            },
-            .imageExtent = .{
-                .width = texture.baseWidth >> @intCast(j),
-                .height = texture.baseHeight >> @intCast(j),
-                .depth = texture.baseDepth,
-            },
-        };
+    for (0..image_ci.arrayLayers) |i| {
+        const layer: u32 = @intCast(i);
+        for (0..image_ci.mipLevels) |j| {
+            const level: u32 = @intCast(j);
+            copy_regions[i * image_ci.mipLevels + j] = vk.BufferImageCopy{
+                .bufferOffset = try texture.getImageOffset(level, 0, layer),
+                .imageSubresource = .{
+                    .aspectMask = .{ .color = true },
+                    .mipLevel = level,
+                    .baseArrayLayer = layer,
+                    .layerCount = 1,
+                },
+                .imageExtent = .{
+                    .width = texture.baseWidth >> @intCast(j),
+                    .height = texture.baseHeight >> @intCast(j),
+                    .depth = texture.baseDepth,
+                },
+            };
+        }
     }
-    vk.cmdCopyBufferToImage(cmd_buf, img_buffer.handle, info.image, .transfer_dst_optimal, texture.numLevels, copy_regions.ptr);
+    vk.cmdCopyBufferToImage(cmd_buf, img_buffer.handle, info.image, .transfer_dst_optimal, @intCast(copy_regions.len), copy_regions.ptr);
 
     const texread_barrier: vk.ImageMemoryBarrier2 = .{
         .srcStageMask = .{ .all_transfer = true },
@@ -690,8 +702,8 @@ pub fn loadImage(a: std.mem.Allocator, filename: [:0]const u8, device: vk.Device
         .image = info.image,
         .subresourceRange = .{
             .aspectMask = .{ .color = true },
-            .levelCount = texture.numLevels,
-            .layerCount = texture.numLayers,
+            .levelCount = image_ci.mipLevels,
+            .layerCount = image_ci.arrayLayers,
         },
     };
     barrier_texinfo.pImageMemoryBarriers = @ptrCast(&texread_barrier);
@@ -712,20 +724,22 @@ pub fn loadImage(a: std.mem.Allocator, filename: [:0]const u8, device: vk.Device
         .anisotropyEnable = .True,
         .maxAnisotropy = 8.0,
         .borderColor = .float_transparent_black,
-        .maxLod = @floatFromInt(texture.numLevels),
+        .maxLod = @floatFromInt(image_ci.mipLevels),
     };
     try vk.createSampler(device, &sampler_ci, null, &info.sampler);
 
-    const view_ci: vk.ImageViewCreateInfo = .{
+    var view_ci: vk.ImageViewCreateInfo = .{
         .format = format,
         .image = info.image,
-        .viewType = @enumFromInt(texture.numDimensions - 1),
         .subresourceRange = .{
-            .layerCount = texture.numLayers,
-            .levelCount = texture.numLevels,
+            .layerCount = image_ci.arrayLayers,
+            .levelCount = image_ci.mipLevels,
             .aspectMask = .{ .color = true },
         },
     };
+    if (texture.isCubemap) {
+        view_ci.viewType = .cube;
+    } else view_ci.viewType = .@"2d";
     try vk.createImageView(device, &view_ci, null, &info.view);
 
     return info;

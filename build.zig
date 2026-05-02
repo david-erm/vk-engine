@@ -40,6 +40,7 @@ pub fn build(b: *std.Build) void {
     cMod.linkSystemLibrary("ktx", .{});
 
     const spirv = compileShader(b, "src/shaders/shader.slang");
+
     const exe = b.addExecutable(.{
         .name = "howtovulkan",
         .root_module = b.createModule(.{
