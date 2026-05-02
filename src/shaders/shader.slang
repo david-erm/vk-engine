@@ -26,6 +26,7 @@ struct VSOutput {
 };
 
 [vk::binding(0, 0)] Sampler2D textures[];
+// [vk::binding(0, 1)] Sampler2D samplers[];
 
 [shader("vertex")]
 VSOutput main(VSInput input, uniform ShaderData *shaderData, uint instanceIndex : SV_VulkanInstanceID)
@@ -34,7 +35,7 @@ VSOutput main(VSInput input, uniform ShaderData *shaderData, uint instanceIndex 
     float4 translate = shaderData->pos[instanceIndex];
     Camera cam = shaderData->cam;
 
-    float3 fragPos = rotate(rotate(input.Pos, shaderData->quat) + translate.xyz - cam.pos.xyz, conj(cam.rot)) ;
+    float3 fragPos = rotate(rotate(input.Pos * translate.w, shaderData->quat) + translate.xyz - cam.pos.xyz, conj(cam.rot)) ;
     output.Normal = rotate(input.Normal, qmul(conj(cam.rot), shaderData->quat));
     output.LightVec = rotate(shaderData->lightPos.xyz - cam.pos.xyz, conj(cam.rot)) - fragPos;
 

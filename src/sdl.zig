@@ -497,7 +497,8 @@ pub const Window = *Window_t;
 
 //input
 pub const pollEvent = @extern(*const fn (event: *Event) callconv(.c) bool, .{ .name = "SDL_PollEvent" });
-pub const getKeyboardState = @extern(*const fn () callconv(.c) *[@intFromEnum(Scancode.count)]bool, .{ .name = "SDL_GetKeyboardState" });
+pub const pumpEvents = @extern(*const fn () callconv(.c) void, .{ .name = "SDL_PumpEvents" });
+pub const getKeyboardState = @extern(*const fn (keynum: ?*i32) callconv(.c) [*]bool, .{ .name = "SDL_GetKeyboardState" });
 
 pub const getError = @extern(*const fn () callconv(.c) [*:0]const u8, .{ .name = "SDL_GetError" });
 

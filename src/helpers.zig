@@ -157,8 +157,342 @@ test "sanity check" {
 
 pub const Context = struct {
     instance: vk.Instance,
-    pdevice: vk.pdevice,
+    pdevice: vk.PhysicalDevice,
     device: vk.Device,
+    queue: vk.Queue,
+    vka: vma.Allocator,
+    qfamily: u32,
+
+    pub fn deinit(ctx: *Context) void {
+        defer sdl.deinit();
+        defer vk.destroyInstance(ctx.instance, null);
+        defer vk.destroyDevice(ctx.device, null);
+        defer vma.destroyAllocator(ctx.vka);
+    }
+
+    pub fn init(arena: std.mem.Allocator) !Context {
+        var ctx: Context = undefined;
+        try sdl.init(.{ .video = true });
+        try sdl.vulkan.loadLibrary(null);
+        const instanceProcAddr = sdl.vulkan.getInstanceProcAddr();
+
+        vk.load(instanceProcAddr);
+
+        {
+            const instance_extensions = try sdl.vulkan.getInstanceExtensions();
+            for (instance_extensions) |extension| {
+                log.debug("instance extension: {s}", .{extension});
+            }
+            const app_info: vk.ApplicationInfo = .{
+                .pApplicationName = "howtovulkna",
+                .apiVersion = vk.makeApiVersion(0, 1, 3, 0),
+            };
+            try vk.createInstance(&.{
+                .pApplicationInfo = &app_info,
+                .enabledExtensionCount = @intCast(instance_extensions.len),
+                .ppEnabledExtensionNames = instance_extensions.ptr,
+            }, null, &ctx.instance);
+            vk.loadInstance(ctx.instance);
+        }
+
+        {
+            var device_count: u32 = 0;
+            try vk.enumeratePhysicalDevices(ctx.instance, &device_count, null);
+            const devices = try arena.alloc(vk.PhysicalDevice, device_count);
+            try vk.enumeratePhysicalDevices(ctx.instance, &device_count, devices.ptr);
+            const device_index: u32 = 0;
+            ctx.pdevice = devices[device_index];
+            for (devices) |d| {
+                var dp: vk.PhysicalDeviceProperties2 = .{};
+                vk.getPhysicalDeviceProperties2(d, &dp);
+                log.info("dev: {s}", .{dp.properties.deviceName});
+            }
+
+            var device_properties: vk.PhysicalDeviceProperties2 = .{};
+            vk.getPhysicalDeviceProperties2(devices[device_index], &device_properties);
+            log.info("Selected device: {s}", .{device_properties.properties.deviceName});
+        }
+
+        {
+            var queue_count: u32 = 0;
+            ctx.qfamily = 0;
+            vk.getPhysicalDeviceQueueFamilyProperties(ctx.pdevice, &queue_count, null);
+            const queue_families = try arena.alloc(vk.QueueFamilyProperties, queue_count);
+            vk.getPhysicalDeviceQueueFamilyProperties(ctx.pdevice, &queue_count, queue_families.ptr);
+            while (!queue_families[ctx.qfamily].queueFlags.graphics) : (ctx.qfamily += 1) {}
+            try sdl.vulkan.getPresentationSupport(ctx.instance, ctx.pdevice, ctx.qfamily);
+        }
+
+        {
+            const qfpriorities: [1]f32 = .{1.0};
+            const queueCI: vk.DeviceQueueCreateInfo = .{
+                .queueFamilyIndex = ctx.qfamily,
+                .queueCount = 1,
+                .pQueuePriorities = &qfpriorities,
+            };
+            var enableVK12Features: vk.PhysicalDeviceVulkan12Features = .{
+                .descriptorIndexing = .True,
+                .shaderSampledImageArrayNonUniformIndexing = .True,
+                .descriptorBindingVariableDescriptorCount = .True,
+                .runtimeDescriptorArray = .True,
+                .bufferDeviceAddress = .True,
+            };
+            var enableVK13Features: vk.PhysicalDeviceVulkan13Features = .{
+                .pNext = &enableVK12Features,
+                .synchronization2 = .True,
+                .dynamicRendering = .True,
+            };
+            try vk.createDevice(ctx.pdevice, &.{
+                .pNext = &enableVK13Features,
+                .queueCreateInfoCount = 1,
+                .pQueueCreateInfos = @ptrCast(&queueCI),
+                .enabledExtensionCount = 1,
+                .ppEnabledExtensionNames = &.{"VK_KHR_swapchain"},
+                .pEnabledFeatures = &.{ .samplerAnisotropy = .True, .fillModeNonSolid = .True },
+            }, null, &ctx.device);
+            vk.loadDevice(ctx.device);
+            vk.getDeviceQueue(ctx.device, ctx.qfamily, 0, &ctx.queue);
+        }
+
+        {
+            const vkFuncs: vma.VulkanFunctions = .{
+                .vkGetInstanceProcAddr = vk.table.instance.vkGetInstanceProcAddr,
+                .vkGetDeviceProcAddr = vk.table.device.vkGetDeviceProcAddr,
+                .vkCreateImage = vk.table.device.vkCreateImage,
+            };
+            _ = vma.createAllocator(&.{
+                .flags = .{ .BufferDeviceAddressBit = 1 },
+                .physicalDevice = ctx.pdevice,
+                .device = ctx.device,
+                .pVulkanFunctions = &vkFuncs,
+                .instance = ctx.instance,
+            }, &ctx.vka);
+        }
+
+        return ctx;
+    }
+};
+
+pub const Image = struct {
+    handle: vk.Image,
+    view: vk.ImageView,
+    allocation: vma.Allocation,
+    format: vk.Format,
+
+    // pub fn deinit(img: *Image, ctx: *const Context) void {
+    //     vk.destroyImageView(ctx.device, img.view, null);
+    //     vma.destroyImage(ctx.vka, img.handle, img.allocation);
+    // }
+
+    // pub fn init(ctx: *const Context, img_ci: vk.ImageCreateInfo) Image {
+    //     const img: Image = undefined;
+    //     img.format = img_ci.format;
+
+    //     const alloc_ci: vma.AllocationCreateInfo = .{ .usage = .auto };
+    //     _ = vma.createImage(ctx.vka, &img_ci, &alloc_ci, &img.handle, &img.allocation, null);
+
+    //     const depthImageViewCI: vk.ImageViewCreateInfo = .{
+    //         .format = img_ci.format,
+    //         .viewType = img_ci.,
+    //         .image = depth_image,
+    //         .subresourceRange = .{
+    //             .aspectMask = .{ .depth = true },
+    //             .layerCount = 1,
+    //             .levelCount = 1,
+    //         },
+    //     };
+    //     try vk.createImageView(ctx.device, &depthImageViewCI, null, &depth_image_view);
+    // }
+};
+
+pub const RenderContext = struct {
+    window: sdl.Window,
+    windowsize: vk.Extent2D,
+    surface: vk.SurfaceKHR,
+    swapchain: vk.SwapchainKHR,
+    swapchain_ci: vk.SwapchainCreateInfoKHR,
+    sc_format: vk.Format,
+    sc_imgs: []vk.Image,
+    sc_img_views: []vk.ImageView,
+    depth: Image,
+    depth_ci: vk.ImageCreateInfo,
+    fences: []vk.Fence,
+    present_semaphores: []vk.Semaphore,
+    render_semaphores: []vk.Semaphore,
+
+    pub fn deinit(rctx: *RenderContext, ctx: Context) void {
+        defer sdl.destroyWindow(&rctx.window);
+        defer vk.destroySurfaceKHR(ctx.instance, rctx.surface, null);
+        defer vk.destroySwapchainKHR(ctx.device, rctx.swapchain, null);
+        defer for (rctx.sc_img_views) |view| {
+            vk.destroyImageView(ctx.device, view, null);
+        };
+        defer for (rctx.fences, rctx.present_semaphores) |fence, smp| {
+            vk.destroySemaphore(ctx.device, smp, null);
+            vk.destroyFence(ctx.device, fence, null);
+        };
+        defer for (rctx.render_semaphores) |semaphore| {
+            vk.destroySemaphore(ctx.device, semaphore, null);
+        };
+        defer vma.destroyImage(ctx.vka, rctx.depth.handle, rctx.depth.allocation);
+        defer vk.destroyImageView(ctx.device, rctx.depth.view, null);
+    }
+
+    pub fn init(ctx: *const Context, arena: std.mem.Allocator, width: u32, height: u32, name: [:0]const u8, frames_in_flight: usize) !RenderContext {
+        var rctx: RenderContext = undefined;
+        rctx.windowsize.width = width;
+        rctx.windowsize.height = height;
+
+        rctx.window = try sdl.createWindow(name.ptr, @intCast(rctx.windowsize.width), @intCast(rctx.windowsize.height), .{
+            .vulkan = true,
+            .resizable = true,
+            .fullscreen = true,
+        });
+        rctx.surface = try sdl.vulkan.createSurface(rctx.window, ctx.instance, null);
+
+        rctx.sc_format = .b8g8r8a8_srgb;
+        {
+            var surfaceCaps: vk.SurfaceCapabilitiesKHR = undefined;
+            try vk.getPhysicalDeviceSurfaceCapabilitiesKHR(ctx.pdevice, rctx.surface, &surfaceCaps);
+            rctx.swapchain_ci = .{
+                .surface = rctx.surface,
+                .minImageCount = surfaceCaps.minImageCount,
+                .imageFormat = rctx.sc_format,
+                .imageColorSpace = .srgb_nonlinear,
+                .imageExtent = rctx.windowsize,
+                .imageArrayLayers = 1,
+                .imageUsage = .{ .color_attachment = true },
+                .preTransform = .{ .identity = true },
+                .compositeAlpha = .{ .@"opaque" = true },
+                .presentMode = .fifo,
+            };
+            try vk.createSwapchainKHR(ctx.device, &rctx.swapchain_ci, null, &rctx.swapchain);
+        }
+
+        {
+            var image_count: u32 = 0;
+            try vk.getSwapchainImagesKHR(ctx.device, rctx.swapchain, &image_count, null);
+            rctx.sc_imgs = try arena.alloc(vk.Image, image_count);
+            try vk.getSwapchainImagesKHR(ctx.device, rctx.swapchain, &image_count, rctx.sc_imgs.ptr);
+
+            rctx.sc_img_views = try arena.alloc(vk.ImageView, rctx.sc_imgs.len);
+            for (0..rctx.sc_imgs.len) |i| {
+                const image_viewCI: vk.ImageViewCreateInfo = .{
+                    .image = rctx.sc_imgs[i],
+                    .viewType = .@"2d",
+                    .format = rctx.sc_format,
+                    .subresourceRange = .{
+                        .aspectMask = .{ .color = true },
+                        .layerCount = 1,
+                        .levelCount = 1,
+                    },
+                };
+                try vk.createImageView(ctx.device, &image_viewCI, null, &rctx.sc_img_views[i]);
+            }
+        }
+
+        rctx.fences = try arena.alloc(vk.Fence, frames_in_flight);
+        rctx.present_semaphores = try arena.alloc(vk.Semaphore, frames_in_flight);
+        rctx.render_semaphores = try arena.alloc(vk.Semaphore, rctx.sc_imgs.len);
+        {
+            const fenceCI: vk.FenceCreateInfo = .{ .flags = .{ .signaled = true } };
+            const semaphoreCI: vk.SemaphoreCreateInfo = .{};
+            for (rctx.fences, rctx.present_semaphores) |*fence, *semaphore| {
+                try vk.createFence(ctx.device, &fenceCI, null, fence);
+                try vk.createSemaphore(ctx.device, &.{}, null, semaphore);
+            }
+            for (rctx.render_semaphores) |*semaphore| {
+                try vk.createSemaphore(ctx.device, &semaphoreCI, null, semaphore);
+            }
+        }
+
+        const depth_formats: [2]vk.Format = .{ .d32_sfloat_s8_uint, .d24_unorm_s8_uint };
+        for (depth_formats) |format| {
+            var formatProperties: vk.FormatProperties2 = .{ .formatProperties = .{} };
+            vk.getPhysicalDeviceFormatProperties2(ctx.pdevice, format, &formatProperties);
+            if (formatProperties.formatProperties.optimalTilingFeatures.depth_stencil_attachment) {
+                rctx.depth.format = format;
+                break;
+            }
+        }
+        std.debug.assert(rctx.depth.format != vk.Format.undefined);
+
+        rctx.depth_ci = .{
+            .extent = .{ .width = rctx.windowsize.width, .height = rctx.windowsize.height, .depth = 1 },
+            .arrayLayers = 1,
+            .mipLevels = 1,
+            .format = rctx.depth.format,
+            .imageType = .@"2d",
+            .initialLayout = .undefined,
+            .tiling = .optimal,
+            .usage = .{ .depth_stencil_attachment = true },
+            .samples = .{ .@"1" = true },
+        };
+
+        const alloc_ci: vma.AllocationCreateInfo = .{ .usage = .auto };
+        _ = vma.createImage(ctx.vka, &rctx.depth_ci, &alloc_ci, &rctx.depth.handle, &rctx.depth.allocation, null);
+
+        const depthImageViewCI: vk.ImageViewCreateInfo = .{
+            .format = rctx.depth.format,
+            .viewType = .@"2d",
+            .image = rctx.depth.handle,
+            .subresourceRange = .{
+                .aspectMask = .{ .depth = true },
+                .layerCount = 1,
+                .levelCount = 1,
+            },
+        };
+        try vk.createImageView(ctx.device, &depthImageViewCI, null, &rctx.depth.view);
+
+        return rctx;
+    }
+
+    pub fn recreate_swap(rctx: *RenderContext, ctx: *const Context) !void {
+        _ = sdl.getWindowSize(rctx.window, @ptrCast(&rctx.windowsize.width), @ptrCast(&rctx.windowsize.height));
+
+        try vk.deviceWaitIdle(ctx.device);
+        var surfaceCaps: vk.SurfaceCapabilitiesKHR = undefined;
+        try vk.getPhysicalDeviceSurfaceCapabilitiesKHR(ctx.pdevice, rctx.surface, &surfaceCaps);
+        rctx.swapchain_ci.oldSwapchain = rctx.swapchain;
+        rctx.swapchain_ci.imageExtent = rctx.windowsize;
+        try vk.createSwapchainKHR(ctx.device, &rctx.swapchain_ci, null, &rctx.swapchain);
+
+        for (rctx.sc_img_views) |view| {
+            vk.destroyImageView(ctx.device, view, null);
+        }
+
+        var count: u32 = @intCast(rctx.sc_imgs.len);
+        try vk.getSwapchainImagesKHR(ctx.device, rctx.swapchain, &count, rctx.sc_imgs.ptr);
+        for (rctx.sc_imgs, 0..) |img, i| {
+            const ci: vk.ImageViewCreateInfo = .{
+                .image = img,
+                .viewType = .@"2d",
+                .format = rctx.sc_format,
+                .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
+            };
+            try vk.createImageView(ctx.device, &ci, null, &rctx.sc_img_views[i]);
+        }
+
+        for (rctx.render_semaphores) |*smp| {
+            vk.destroySemaphore(ctx.device, smp.*, null);
+            try vk.createSemaphore(ctx.device, &.{}, null, smp);
+        }
+        // for (rctx.render_semaphores) |*smp| {}
+        vk.destroySwapchainKHR(ctx.device, rctx.swapchain_ci.oldSwapchain, null);
+        vma.destroyImage(ctx.vka, rctx.depth.handle, rctx.depth.allocation);
+        vk.destroyImageView(ctx.device, rctx.depth.view, null);
+
+        rctx.depth_ci.extent = .{ .width = rctx.windowsize.width, .height = rctx.windowsize.height, .depth = 1 };
+        const aci: vma.AllocationCreateInfo = .{ .usage = .auto, .flags = .{ .dedicated_memory_bit = true } };
+        _ = vma.createImage(ctx.vka, &rctx.depth_ci, &aci, &rctx.depth.handle, &rctx.depth.allocation, null);
+        const viewCI: vk.ImageViewCreateInfo = .{
+            .image = rctx.depth.handle,
+            .viewType = .@"2d",
+            .format = rctx.depth.format,
+            .subresourceRange = .{ .aspectMask = .{ .depth = true }, .layerCount = 1, .levelCount = 1 },
+        };
+        try vk.createImageView(ctx.device, &viewCI, null, &rctx.depth.view);
+    }
 };
 
 pub const Buffer = struct {
@@ -205,7 +539,7 @@ pub const Camera = struct {
     pose: Pose = .{},
     sens: f32 = 0.1,
     movespeed: f32 = 10,
-    fov: f32 = 60,
+    fov: f32 = std.math.pi / 3.0,
 
     pub fn mouseInput(cam: *Camera, dT: f32, relative_x: f32, relative_y: f32) void {
         const old_pitch = cam.pose.extra;
@@ -251,7 +585,7 @@ pub const ShaderDataBuffer = struct {
 };
 
 pub const LoadedMesh = struct {
-    indices: std.ArrayList(u16),
+    indices: std.ArrayList(u32),
     vertices: std.ArrayList(Vertex),
 };
 
@@ -408,11 +742,12 @@ pub fn loadObj(arena: std.mem.Allocator, io: *std.Io, path: [*:0]const u8) !Load
     if (ret != 0) @panic("loading obj failed");
 
     var vertices: std.ArrayList(Vertex) = .empty;
-    var indices: std.ArrayList(u16) = .empty;
+    var indices: std.ArrayList(u32) = .empty;
     for (0..attrib.num_faces, attrib.faces) |i, face| {
         const v_start: usize = @intCast(face.v_idx * 3);
         const vn_start: usize = @intCast(face.vn_idx * 3);
         const vt_start: usize = @intCast(face.vt_idx * 2);
+
         const vert: Vertex = .{
             .pos = .{ .x = attrib.vertices[v_start], .y = -attrib.vertices[v_start + 1], .z = attrib.vertices[v_start + 2] },
             .norm = .{ .x = attrib.normals[vn_start], .y = -attrib.normals[vn_start + 1], .z = attrib.normals[vn_start + 2] },
