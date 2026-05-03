@@ -8,7 +8,9 @@ const sdl = @import("sdl.zig");
 const vma = @import("vma.zig");
 const ktx = @import("ktx.zig");
 
-const shader align(@alignOf(u32)) = @embedFile("shader").*;
+const blinn_source align(@alignOf(u32)) = @embedFile("blinn").*;
+const skybox_source align(@alignOf(u32)) = @embedFile("skybox").*;
+// const shaders = @import("shaders");
 
 const Vertex = zkf.Vertex;
 const Vec3 = zkf.Vec3;
@@ -38,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
 
     var ctx: zkf.Context = try .init(arena);
     defer ctx.deinit();
-    var rctx: zkf.RenderContext = try .init(&ctx, arena, 800, 600, "testing", 2);
+    var rctx: zkf.RenderContext = try .init(&ctx, arena, 800, 600, "testing", max_frames);
     defer rctx.deinit(ctx);
 
     _ = sdl.setWindowRelativeMouseMode(rctx.window, true);
@@ -165,6 +167,12 @@ pub fn main(init: std.process.Init) !void {
     var pipeline_layout: vk.PipelineLayout = undefined;
     defer vk.destroyPipelineLayout(ctx.device, pipeline_layout, null);
     {
+        const push_constant_ranges = [_]vk.PushConstantRange{
+            .{ .offset = 0, .size = 8, .stageFlags = .{ .vertex = true } },
+            .{ .offset = 0, .size = 4, .stageFlags = .{ .fragment = true } },
+        };
+        _ = push_constant_ranges;
+
         const pc_range: vk.PushConstantRange = .{
             .offset = 0,
             .size = @sizeOf(vk.DeviceAddress),
@@ -179,11 +187,11 @@ pub fn main(init: std.process.Init) !void {
         try vk.createPipelineLayout(ctx.device, &ci, null, &pipeline_layout);
     }
 
-    var shader_module: vk.ShaderModule = undefined;
-    defer vk.destroyShaderModule(ctx.device, shader_module, null);
+    var blinn_module: vk.ShaderModule = undefined;
+    defer vk.destroyShaderModule(ctx.device, blinn_module, null);
     {
-        const module_ci: vk.ShaderModuleCreateInfo = .{ .pCode = @ptrCast(&shader), .codeSize = shader.len };
-        try vk.createShaderModule(ctx.device, &module_ci, null, &shader_module);
+        const module_ci: vk.ShaderModuleCreateInfo = .{ .pCode = @ptrCast(&blinn_source), .codeSize = blinn_source.len };
+        try vk.createShaderModule(ctx.device, &module_ci, null, &blinn_module);
     }
 
     var pipeline: vk.Pipeline = undefined;
@@ -208,8 +216,8 @@ pub fn main(init: std.process.Init) !void {
         };
         //pass in shader
         const shader_stages: [2]vk.PipelineShaderStageCreateInfo = .{
-            .{ .stage = .{ .vertex = true }, .module = shader_module, .pName = "main" },
-            .{ .stage = .{ .fragment = true }, .module = shader_module, .pName = "main" },
+            .{ .stage = .{ .vertex = true }, .module = blinn_module, .pName = "main" },
+            .{ .stage = .{ .fragment = true }, .module = blinn_module, .pName = "main" },
         };
         const render_ci: vk.PipelineRenderingCreateInfo = .{
             .colorAttachmentCount = 1,
