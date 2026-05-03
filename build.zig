@@ -77,9 +77,12 @@ pub fn build(b: *std.Build) void {
 }
 
 pub fn compileShader(b: *std.Build, file: []const u8) *std.Build.Module {
+    const filename = std.fs.path.stem(file);
     const slangc_run = b.addSystemCommand(&.{"slangc"});
+    slangc_run.addArg("-depfile");
+    _ = slangc_run.addDepFileOutputArg(b.fmt("{s}.d", .{filename}));
     slangc_run.addFileArg(b.path(file));
     slangc_run.addArgs(&.{ "-matrix-layout-column-major", "-target", "spirv", "-o" });
-    const path = slangc_run.addOutputFileArg(std.fs.path.stem(file));
+    const path = slangc_run.addOutputFileArg(filename);
     return b.createModule(.{ .root_source_file = path });
 }
