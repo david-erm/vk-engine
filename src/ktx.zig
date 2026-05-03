@@ -1,5 +1,5 @@
 const h = @import("helpers.zig");
-const vk = @import("vk.zig");
+const vk = @import("vk");
 pub const ErrorEnum = enum(u32) {
     Success = 0,
     FileData,

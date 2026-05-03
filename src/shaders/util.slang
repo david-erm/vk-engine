@@ -1,5 +1,6 @@
 module util;
 
+
 //Quat operations
 public float4 qmul(float4 q1, float4 q2) {
     float4 q3;

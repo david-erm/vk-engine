@@ -2,15 +2,13 @@ const std = @import("std");
 const Io = std.Io;
 const log = std.log.scoped(.howtovulkan);
 
+const vk = @import("vk");
+const shaders = @import("shaders");
+
 const zkf = @import("helpers.zig");
-const vk = @import("vk.zig");
 const sdl = @import("sdl.zig");
 const vma = @import("vma.zig");
 const ktx = @import("ktx.zig");
-
-const blinn_source align(@alignOf(u32)) = @embedFile("blinn").*;
-const skybox_source align(@alignOf(u32)) = @embedFile("skybox").*;
-// const shaders = @import("shaders");
 
 const Vertex = zkf.Vertex;
 const Vec3 = zkf.Vec3;
@@ -190,7 +188,7 @@ pub fn main(init: std.process.Init) !void {
     var blinn_module: vk.ShaderModule = undefined;
     defer vk.destroyShaderModule(ctx.device, blinn_module, null);
     {
-        const module_ci: vk.ShaderModuleCreateInfo = .{ .pCode = @ptrCast(&blinn_source), .codeSize = blinn_source.len };
+        const module_ci: vk.ShaderModuleCreateInfo = .{ .pCode = @ptrCast(&shaders.shader.spirv), .codeSize = shaders.shader.spirv.len };
         try vk.createShaderModule(ctx.device, &module_ci, null, &blinn_module);
     }
 

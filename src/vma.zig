@@ -1,4 +1,4 @@
-const vk = @import("vk.zig");
+const vk = @import("vk");
 const std = @import("std");
 
 pub const VulkanFunctions = extern struct {

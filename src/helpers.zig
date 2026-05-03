@@ -1,6 +1,6 @@
 const std = @import("std");
 const c = @import("c");
-const vk = @import("vk.zig");
+const vk = @import("vk");
 const sdl = @import("sdl.zig");
 const vma = @import("vma.zig");
 const ktx = @import("ktx.zig");

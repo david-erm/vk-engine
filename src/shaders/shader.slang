@@ -59,6 +59,7 @@ float4 main(VSOutput input)
         color = textures[NonUniformResourceIndex(input.instanceIndex)].Sample(input.UV).rgb * input.factor;
     }
 
+    
 
     return float4(color.rgb * (diffuse + float3(0.1)) + specular, 1.0);
     // return float4(N, 1.0);
