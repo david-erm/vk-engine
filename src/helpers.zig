@@ -348,6 +348,7 @@ pub const RenderContext = struct {
             .vulkan = true,
             .resizable = true,
             .fullscreen = true,
+            .borderless = true,
         });
         rctx.surface = try sdl.vulkan.createSurface(rctx.window, ctx.instance, null);
 
@@ -478,7 +479,6 @@ pub const RenderContext = struct {
             vk.destroySemaphore(ctx.device, smp.*, null);
             try vk.createSemaphore(ctx.device, &.{}, null, smp);
         }
-        // for (rctx.render_semaphores) |*smp| {}
         vk.destroySwapchainKHR(ctx.device, rctx.swapchain_ci.oldSwapchain, null);
         vma.destroyImage(ctx.vka, rctx.depth.handle, rctx.depth.allocation);
         vk.destroyImageView(ctx.device, rctx.depth.view, null);

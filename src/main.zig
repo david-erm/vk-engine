@@ -493,23 +493,10 @@ pub fn main(init: std.process.Init) !void {
 
         //input
         {
-            // sdl.pumpEvents();
-            var event: sdl.Event = undefined;
-            while (sdl.pollEvent(&event)) {
-                switch (event.type) {
-                    .quit => quit = true,
-                    .window_resized => recreate_swap = true,
-                    else => {},
-                }
-            }
-
-            var xrel_sum: f32 = 0;
-            var yrel_sum: f32 = 0;
-
-            sel = 1;
-
-            _ = sdl.getRelativeMouseState(&xrel_sum, &yrel_sum);
-            cam.mouseInput(xrel_sum, yrel_sum);
+            var xrel: f32 = 0;
+            var yrel: f32 = 0;
+            _ = sdl.getRelativeMouseState(&xrel, &yrel);
+            cam.mouseInput(xrel, yrel);
 
             const keyboard_state = sdl.getKeyboardState(null);
             var in: [4]bool = @splat(false);
@@ -530,6 +517,22 @@ pub fn main(init: std.process.Init) !void {
             }
 
             cam.moveInput(dT, in);
+
+            var event: sdl.Event = undefined;
+            while (sdl.pollEvent(&event)) {
+                switch (event.type) {
+                    .quit => quit = true,
+                    .window_resized => recreate_swap = true,
+                    .window_leave_fullscreen, .window_enter_fullscreen => log.info("lel", .{}),
+                    .key_down => {
+                        switch (event.key.scancode) {
+                            .h => sel = 2,
+                            else => {},
+                        }
+                    },
+                    else => {},
+                }
+            }
         }
 
         if (recreate_swap) {
