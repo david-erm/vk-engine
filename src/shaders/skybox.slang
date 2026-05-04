@@ -1,24 +1,29 @@
 import util;
 
-struct VSOut {
-  float4 Pos : SV_Position;
-  float3 vector;
+
+struct VSOutput {
+    float4 Pos : SV_POSITION;
+    float3 local_pos;
 };
 
-[vk::binding(0, 0)] SamplerCube skybox[];
+[vk::binding(0, 0)] SamplerCube cubes[];
 
 [shader("vertex")]
-VSOut main(float3 inputpos, uniform ShaderData* shaderData)
+VSOutput main(float3 pos, uniform ShaderData *shaderData)
 {
-  VSOut output;
-  output.Pos = mul(shaderData->projection, float4(rotate(inputpos, conj(shaderData->cam.rot)), 1));     
-  output.vector = inputpos;
+    VSOutput output;
+    Pose cam = shaderData->cam;
 
-  return output;
+    output.local_pos = rotate(pos, cam.rot);
+    output.Pos = float4(pos, 1.0).xyww;
+    
+    return output;
 }
 
 [shader("fragment")]
-float4 main(VSOut input, uniform uint32_t skybox_idx)
+float4 main(VSOutput input)
 {
-    return skybox[NonUniformResourceIndex(skybox_idx)].Sample(input.vector);
+    input.local_pos.y = -input.local_pos.y;
+    return cubes[NonUniformResourceIndex(3)].Sample(input.local_pos);
 }
+

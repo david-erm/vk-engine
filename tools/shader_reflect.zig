@@ -72,7 +72,7 @@ pub fn main(init: std.process.Init) !void {
     const parsed = try std.json.parseFromSliceLeaky(Schema, arena, buffer, .{ .ignore_unknown_fields = true });
 
     var push_constants: std.ArrayList(u8) = .empty;
-    try push_constants.appendSlice(arena, "const push_constant_ranges = [_]vk.PushConstantRange{\n");
+    try push_constants.appendSlice(arena, "pub const push_constant_ranges = [_]vk.PushConstantRange{\n");
 
     for (parsed.entryPoints) |entry| {
         const stage = entry.stage;

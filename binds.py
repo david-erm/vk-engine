@@ -356,8 +356,9 @@ def handle_member(mem, st):
     ret += mem.name + ": "
 
     ret += parse_type(mem)
-    if not st.union:
+    if not (mem.type in vk.structs and vk.structs[mem.type].union or st.union):
         ret += get_default(mem)
+
     ret += ",\n"
     return ret
 
@@ -435,7 +436,7 @@ def zig_cmd(cmd):
         prefix = device_ns
 
     if cmd.returnType == "VkResult":
-        out += f'pub fn {name}({params}) ResultErr!void {{\n\treturn try makeError(ResultErr, {cmd_ns}.{prefix}.{cmd.name}('
+        out += f'pub fn {name}({params}) ResultErr!void {{\n\treturn makeError(ResultErr, {cmd_ns}.{prefix}.{cmd.name}('
     else:
         out += f"pub fn {name}({params}) {types[cmd.returnType]} {{\n\treturn {cmd_ns}.{prefix}.{cmd.name}("
     first = True

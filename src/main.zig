@@ -165,20 +165,9 @@ pub fn main(init: std.process.Init) !void {
     var pipeline_layout: vk.PipelineLayout = undefined;
     defer vk.destroyPipelineLayout(ctx.device, pipeline_layout, null);
     {
-        const push_constant_ranges = [_]vk.PushConstantRange{
-            .{ .offset = 0, .size = 8, .stageFlags = .{ .vertex = true } },
-            .{ .offset = 0, .size = 4, .stageFlags = .{ .fragment = true } },
-        };
-        _ = push_constant_ranges;
-
-        const pc_range: vk.PushConstantRange = .{
-            .offset = 0,
-            .size = @sizeOf(vk.DeviceAddress),
-            .stageFlags = .{ .vertex = true },
-        };
         const ci: vk.PipelineLayoutCreateInfo = .{
-            .pushConstantRangeCount = 1,
-            .pPushConstantRanges = @ptrCast(&pc_range),
+            .pushConstantRangeCount = shaders.shader.push_constant_ranges.len,
+            .pPushConstantRanges = &shaders.shader.push_constant_ranges,
             .setLayoutCount = 1,
             .pSetLayouts = @ptrCast(&desc_layout),
         };
@@ -230,7 +219,7 @@ pub fn main(init: std.process.Init) !void {
             .pVertexInputState = &vertex_input,
             .pInputAssemblyState = &.{ .topology = .triangle_list },
             .pViewportState = &.{ .viewportCount = 1, .scissorCount = 1 },
-            .pRasterizationState = &.{ .lineWidth = 1.0, .polygonMode = .fill, .cullMode = .{ .back = false } },
+            .pRasterizationState = &.{ .lineWidth = 1.0, .polygonMode = .fill, .cullMode = .{ .back = true } },
             .pMultisampleState = &.{ .rasterizationSamples = .{ .@"1" = true } },
             .pDepthStencilState = &.{ .depthTestEnable = .True, .depthWriteEnable = .True, .depthCompareOp = .less_or_equal },
             .pColorBlendState = &.{ .attachmentCount = 1, .pAttachments = @ptrCast(&blend_attachment) },
@@ -238,6 +227,75 @@ pub fn main(init: std.process.Init) !void {
             .layout = pipeline_layout,
         };
         try vk.createGraphicsPipelines(ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&pipeline));
+    }
+
+    var skybox_layout: vk.PipelineLayout = undefined;
+    defer vk.destroyPipelineLayout(ctx.device, skybox_layout, null);
+    {
+        const ci: vk.PipelineLayoutCreateInfo = .{
+            .pushConstantRangeCount = shaders.skybox.push_constant_ranges.len,
+            .pPushConstantRanges = &shaders.skybox.push_constant_ranges,
+            .setLayoutCount = 1,
+            .pSetLayouts = @ptrCast(&desc_layout),
+        };
+        try vk.createPipelineLayout(ctx.device, &ci, null, &skybox_layout);
+    }
+
+    var skybox_module: vk.ShaderModule = undefined;
+    defer vk.destroyShaderModule(ctx.device, skybox_module, null);
+    {
+        const ci: vk.ShaderModuleCreateInfo = .{
+            .codeSize = shaders.skybox.spirv.len,
+            .pCode = @ptrCast(&shaders.skybox.spirv),
+        };
+        try vk.createShaderModule(ctx.device, &ci, null, &skybox_module);
+    }
+
+    var skybox_pipeline: vk.Pipeline = undefined;
+    defer vk.destroyPipeline(ctx.device, skybox_pipeline, null);
+    {
+        const bind: vk.VertexInputBindingDescription = .{
+            .binding = 0,
+            .inputRate = .vertex,
+            .stride = @sizeOf(Vertex),
+        };
+        const attribute: vk.VertexInputAttributeDescription = .{
+            .binding = 0,
+            .format = .r32g32b32_sfloat,
+            .location = 0,
+            .offset = 0,
+        };
+        const vci: vk.PipelineVertexInputStateCreateInfo = .{
+            .vertexAttributeDescriptionCount = 1,
+            .pVertexAttributeDescriptions = @ptrCast(&attribute),
+            .vertexBindingDescriptionCount = 1,
+            .pVertexBindingDescriptions = @ptrCast(&bind),
+        };
+        const stages: [2]vk.PipelineShaderStageCreateInfo = .{
+            .{ .module = skybox_module, .pName = "main", .stage = .{ .vertex = true } },
+            .{ .module = skybox_module, .pName = "main", .stage = .{ .fragment = true } },
+        };
+        const render_ci: vk.PipelineRenderingCreateInfo = .{
+            .colorAttachmentCount = 1,
+            .pColorAttachmentFormats = @ptrCast(&rctx.sc_format),
+            .depthAttachmentFormat = rctx.depth.format,
+        };
+        const blend_attachment: vk.PipelineColorBlendAttachmentState = .{ .colorWriteMask = @bitCast(@as(u32, 0xF)) };
+        var ci: vk.GraphicsPipelineCreateInfo = .{
+            .pNext = &render_ci,
+            .stageCount = stages.len,
+            .pStages = &stages,
+            .pVertexInputState = &vci,
+            .pInputAssemblyState = &.{ .topology = .triangle_list },
+            .pViewportState = &.{ .viewportCount = 1, .scissorCount = 1 },
+            .pRasterizationState = &.{ .lineWidth = 1.0, .polygonMode = .fill, .cullMode = .{ .front = true } },
+            .pMultisampleState = &.{ .rasterizationSamples = .{ .@"1" = true } },
+            .pDepthStencilState = &.{ .depthTestEnable = .True, .depthWriteEnable = .True, .depthCompareOp = .equal },
+            .pColorBlendState = &.{ .attachmentCount = 1, .pAttachments = @ptrCast(&blend_attachment) },
+            .pDynamicState = &.{ .dynamicStateCount = 2, .pDynamicStates = &.{ .viewport, .scissor } },
+            .layout = skybox_layout,
+        };
+        try vk.createGraphicsPipelines(ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&skybox_pipeline));
     }
 
     var shader_buffers: [max_frames]zkf.Buffer = undefined;
@@ -359,21 +417,24 @@ pub fn main(init: std.process.Init) !void {
                 const scissor: vk.Rect2D = .{ .extent = rctx.windowsize };
                 vk.cmdSetScissor(cb, 0, 1, @ptrCast(&scissor));
                 vk.cmdBindPipeline(cb, .graphics, pipeline);
-                //textures
                 vk.cmdBindDescriptorSets(cb, .graphics, pipeline_layout, 0, 1, @ptrCast(&desc_set), 0, undefined);
+                vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&shader_buffers[frame_index].address(ctx.device)));
 
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&suzanne_buffer.handle), &.{0});
                 vk.cmdBindIndexBuffer(cb, suzanne_buffer.handle, vBufferSize, .uint32);
-                vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&shader_buffers[frame_index].address(ctx.device)));
                 vk.cmdDrawIndexed(cb, @intCast(suzanne.indices.items.len), 3, 0, 0, 0);
 
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&plane_buffer.handle), &.{0});
                 vk.cmdBindIndexBuffer(cb, plane_buffer.handle, @sizeOf(f32) * plane_vertices.len, .uint16);
                 vk.cmdDrawIndexed(cb, @intCast(quad_indices.len), 1, 0, 0, 3);
 
+                vk.cmdBindPipeline(cb, .graphics, skybox_pipeline);
+                vk.cmdBindDescriptorSets(cb, .graphics, skybox_layout, 0, 1, @ptrCast(&desc_set), 0, undefined);
+                vk.cmdPushConstants(cb, skybox_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&shader_buffers[frame_index].address(ctx.device)));
+
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&cube_buffer.handle), &.{0});
                 vk.cmdBindIndexBuffer(cb, cube_buffer.handle, @sizeOf(Vertex) * cube.vertices.items.len, .uint32);
-                vk.cmdDrawIndexed(cb, @intCast(cube.indices.items.len), 1, 0, 0, 4);
+                vk.cmdDrawIndexed(cb, @intCast(cube.indices.items.len), 1, 0, 0, 0);
             }
 
             const present_barrier: vk.ImageMemoryBarrier2 = .{
