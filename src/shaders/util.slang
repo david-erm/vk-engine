@@ -22,6 +22,7 @@ public float3 rotate(float3 v, float4 q) {
 
 public struct Pose {
     public float4 pos;
+
     public float4 rot;
 };
 

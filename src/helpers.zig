@@ -538,13 +538,13 @@ pub const Camera = struct {
     const pitch_limit = std.math.pi / 2.0 - 0.1;
 
     pose: Pose = .{ .extra = 0 },
-    sens: f32 = 0.1,
+    sens: f32 = 0.002,
     movespeed: f32 = 10,
     fov: f32 = std.math.pi / 3.0,
 
-    pub fn mouseInput(cam: *Camera, dT: f32, relative_x: f32, relative_y: f32) void {
+    pub fn mouseInput(cam: *Camera, relative_x: f32, relative_y: f32) void {
         const old_pitch = cam.pose.extra;
-        const f = dT * cam.sens;
+        const f = cam.sens;
 
         cam.pose.extra += relative_y * f;
         if (@abs(cam.pose.extra) > pitch_limit) {

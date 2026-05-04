@@ -5,3 +5,6 @@ struct Render {
 	translucent_pipeline:
 	
 }
+
+
+fix camera stutter

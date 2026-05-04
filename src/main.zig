@@ -41,6 +41,20 @@ pub fn main(init: std.process.Init) !void {
     var rctx: zkf.RenderContext = try .init(&ctx, arena, 800, 600, "testing", max_frames);
     defer rctx.deinit(ctx);
 
+    var mem_props: vk.PhysicalDeviceMemoryProperties2 = .{};
+    vk.getPhysicalDeviceMemoryProperties2(ctx.pdevice, &mem_props);
+
+    for (0..mem_props.memoryProperties.memoryTypeCount) |i| {
+        log.info("mem type {}:", .{i});
+        inline for (@typeInfo(vk.MemoryPropertyFlags).@"struct".fields) |field| {
+            log.info("\t{s}: {}", .{ field.name, @field(mem_props.memoryProperties.memoryTypes[i].propertyFlags, field.name) });
+        }
+    }
+
+    for (0..mem_props.memoryProperties.memoryHeapCount) |i| {
+        log.info("heap: {}", .{mem_props.memoryProperties.memoryHeaps[i]});
+    }
+
     _ = sdl.setWindowRelativeMouseMode(rctx.window, true);
 
     const suzanne = try zkf.loadObj(arena, &io, "assets/suzanne.obj");
@@ -479,25 +493,23 @@ pub fn main(init: std.process.Init) !void {
 
         //input
         {
+            // sdl.pumpEvents();
             var event: sdl.Event = undefined;
             while (sdl.pollEvent(&event)) {
                 switch (event.type) {
                     .quit => quit = true,
                     .window_resized => recreate_swap = true,
-                    .key_down => {
-                        if (event.key.repeat) break;
-                        switch (event.key.scancode) {
-                            .h => sel = (sel + 1) % 3,
-                            .escape => quit = true,
-                            else => {},
-                        }
-                    },
-                    .mouse_motion => {
-                        cam.mouseInput(dT, event.motion.xrel, event.motion.yrel);
-                    },
                     else => {},
                 }
             }
+
+            var xrel_sum: f32 = 0;
+            var yrel_sum: f32 = 0;
+
+            sel = 1;
+
+            _ = sdl.getRelativeMouseState(&xrel_sum, &yrel_sum);
+            cam.mouseInput(xrel_sum, yrel_sum);
 
             const keyboard_state = sdl.getKeyboardState(null);
             var in: [4]bool = @splat(false);
@@ -513,6 +525,10 @@ pub fn main(init: std.process.Init) !void {
             if (keyboard_state[@intFromEnum(sdl.Scancode.a)]) {
                 in[3] = true;
             }
+            if (keyboard_state[@intFromEnum(sdl.Scancode.escape)]) {
+                quit = true;
+            }
+
             cam.moveInput(dT, in);
         }
 
