@@ -452,7 +452,8 @@ pub const RenderContext = struct {
     pub fn recreate_swap(rctx: *RenderContext, ctx: *const Context) !void {
         _ = sdl.getWindowSize(rctx.window, @ptrCast(&rctx.windowsize.width), @ptrCast(&rctx.windowsize.height));
 
-        try vk.deviceWaitIdle(ctx.device);
+        try vk.queueWaitIdle(ctx.queue);
+
         var surfaceCaps: vk.SurfaceCapabilitiesKHR = undefined;
         try vk.getPhysicalDeviceSurfaceCapabilitiesKHR(ctx.pdevice, rctx.surface, &surfaceCaps);
         rctx.swapchain_ci.oldSwapchain = rctx.swapchain;
@@ -479,6 +480,7 @@ pub const RenderContext = struct {
             vk.destroySemaphore(ctx.device, smp.*, null);
             try vk.createSemaphore(ctx.device, &.{}, null, smp);
         }
+
         vk.destroySwapchainKHR(ctx.device, rctx.swapchain_ci.oldSwapchain, null);
         vma.destroyImage(ctx.vka, rctx.depth.handle, rctx.depth.allocation);
         vk.destroyImageView(ctx.device, rctx.depth.view, null);
@@ -715,7 +717,6 @@ pub fn loadImage(a: std.mem.Allocator, filename: [:0]const u8, device: vk.Device
         .pCommandBuffers = @ptrCast(&cmd_buf),
     };
     try vk.queueSubmit(queue, 1, @ptrCast(&sub_info), fence);
-    try vk.waitForFences(device, 1, @ptrCast(&fence), .True, std.math.maxInt(u64));
 
     const sampler_ci: vk.SamplerCreateInfo = .{
         .magFilter = .linear,
@@ -742,6 +743,7 @@ pub fn loadImage(a: std.mem.Allocator, filename: [:0]const u8, device: vk.Device
     } else view_ci.viewType = .@"2d";
     try vk.createImageView(device, &view_ci, null, &info.view);
 
+    try vk.waitForFences(device, 1, @ptrCast(&fence), .True, std.math.maxInt(u64));
     return info;
 }
 

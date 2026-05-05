@@ -65,6 +65,14 @@ pub fn main(init: std.process.Init) !void {
     };
     defer shader_gen.close(io);
 
+    // try shader_gen.writeStreamingAll(io,
+    //     \\pub fn getShaderModule() {
+    //     \\
+    //     \\
+    //     \\
+    //     \\}
+    // );
+
     const size = try reflection_json.length(io);
     const buffer = try arena.alloc(u8, size);
     const read_size = try reflection_json.readPositionalAll(io, buffer, 0);

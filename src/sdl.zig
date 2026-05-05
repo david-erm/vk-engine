@@ -524,6 +524,7 @@ pub const quitSubsystem = @extern(*const fn (flags: InitFlags) callconv(.c) void
 
 pub const getWindowSize = @extern(*const fn (window: Window, w: *i32, h: *i32) callconv(.c) bool, .{ .name = "SDL_GetWindowSize" });
 pub const setWindowRelativeMouseMode = @extern(*const fn (window: Window, enable: bool) callconv(.c) bool, .{ .name = "SDL_SetWindowRelativeMouseMode" });
+pub const setWindowFullscreen = @extern(*const fn (window: Window, enable: bool) callconv(.c) bool, .{ .name = "SDL_SetWindowFullscreen" });
 pub const getRelativeMouseState = @extern(*const fn (xrel: *f32, yrel: *f32) callconv(.c) MouseButtonFlags, .{ .name = "SDL_GetRelativeMouseState" });
 pub const deinit = @extern(*const fn () callconv(.c) void, .{ .name = "SDL_Quit" });
 

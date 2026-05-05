@@ -6,5 +6,5 @@ struct Render {
 	
 }
 
-
-fix camera stutter
+vertex pulling over
+	surely can check for performance differences

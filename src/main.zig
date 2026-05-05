@@ -31,6 +31,8 @@ pub const ShaderData = extern struct {
 
 const max_frames = 2;
 var cam: Camera = .{ .pose = .{ .pos = .{ .z = 6.0 }, .rot = .identity, .extra = 0 } };
+var fullscreen = false;
+var mouse_mode = true;
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -41,22 +43,31 @@ pub fn main(init: std.process.Init) !void {
     var rctx: zkf.RenderContext = try .init(&ctx, arena, 800, 600, "testing", max_frames);
     defer rctx.deinit(ctx);
 
+    //mem
     var mem_props: vk.PhysicalDeviceMemoryProperties2 = .{};
     vk.getPhysicalDeviceMemoryProperties2(ctx.pdevice, &mem_props);
+    var m3: vk.PhysicalDeviceMaintenance3Properties = .{};
+    var idk: vk.PhysicalDeviceProperties2 = .{ .pNext = &m3 };
+    vk.getPhysicalDeviceProperties2(ctx.pdevice, &idk);
 
-    for (0..mem_props.memoryProperties.memoryTypeCount) |i| {
-        log.info("mem type {}:", .{i});
-        inline for (@typeInfo(vk.MemoryPropertyFlags).@"struct".fields) |field| {
-            log.info("\t{s}: {}", .{ field.name, @field(mem_props.memoryProperties.memoryTypes[i].propertyFlags, field.name) });
-        }
-    }
+    const memtype_idx: u32 = for (0..mem_props.memoryProperties.memoryTypeCount) |i| {
+        const flags = mem_props.memoryProperties.memoryTypes[i].propertyFlags;
+        if (flags.device_local and flags.host_visible and flags.host_coherent) break @intCast(i);
+    } else return error.NoSuitableMemory;
 
-    for (0..mem_props.memoryProperties.memoryHeapCount) |i| {
-        log.info("heap: {}", .{mem_props.memoryProperties.memoryHeaps[i]});
-    }
+    const mem_smth: vk.MemoryAllocateFlagsInfo = .{ .flags = .{ .device_address = true } };
+    const mem_ci: vk.MemoryAllocateInfo = .{ .allocationSize = 0x200000, .memoryTypeIndex = memtype_idx, .pNext = &mem_smth };
+    var mem: vk.DeviceMemory = undefined;
+    try vk.allocateMemory(ctx.device, &mem_ci, null, &mem);
+    defer vk.freeMemory(ctx.device, mem, null);
+
+    var pointer: [*]align(4096) u8 = undefined;
+    try vk.mapMemory(ctx.device, mem, 0, 4096, .{}, @ptrCast(&pointer));
+    defer vk.unmapMemory(ctx.device, mem);
+    log.info("{*}, {*}", .{ pointer, pointer + 1 });
+    //end mem
 
     _ = sdl.setWindowRelativeMouseMode(rctx.window, true);
-
     const suzanne = try zkf.loadObj(arena, &io, "assets/suzanne.obj");
     const cube = try zkf.loadObj(arena, &io, "assets/cube.obj");
 
@@ -339,6 +350,8 @@ pub fn main(init: std.process.Init) !void {
         last_time = Io.Clock.now(.real, io).toMicroseconds();
         const dT = elasped / 1000000.0;
 
+        // log.info("fps: {}", .{1 / dT});
+
         vk.acquireNextImageKHR(ctx.device, rctx.swapchain, std.math.maxInt(u64), rctx.present_semaphores[frame_index], null, &image_index) catch |e| switch (e) {
             error.error_out_of_dateKHR, error.suboptimalKHR => recreate_swap = true,
             else => return e,
@@ -476,6 +489,7 @@ pub fn main(init: std.process.Init) !void {
             .pSignalSemaphores = @ptrCast(&rctx.render_semaphores[image_index]),
         };
         try vk.queueSubmit(ctx.queue, 1, @ptrCast(&submit_info), rctx.fences[frame_index]);
+
         frame_index = (frame_index + 1) % max_frames;
 
         const present_info: vk.PresentInfoKHR = .{
@@ -493,10 +507,12 @@ pub fn main(init: std.process.Init) !void {
 
         //input
         {
-            var xrel: f32 = 0;
-            var yrel: f32 = 0;
-            _ = sdl.getRelativeMouseState(&xrel, &yrel);
-            cam.mouseInput(xrel, yrel);
+            if (mouse_mode) {
+                var xrel: f32 = 0;
+                var yrel: f32 = 0;
+                _ = sdl.getRelativeMouseState(&xrel, &yrel);
+                cam.mouseInput(xrel, yrel);
+            }
 
             const keyboard_state = sdl.getKeyboardState(null);
             var in: [4]bool = @splat(false);
@@ -512,9 +528,6 @@ pub fn main(init: std.process.Init) !void {
             if (keyboard_state[@intFromEnum(sdl.Scancode.a)]) {
                 in[3] = true;
             }
-            if (keyboard_state[@intFromEnum(sdl.Scancode.escape)]) {
-                quit = true;
-            }
 
             cam.moveInput(dT, in);
 
@@ -523,11 +536,21 @@ pub fn main(init: std.process.Init) !void {
                 switch (event.type) {
                     .quit => quit = true,
                     .window_resized => recreate_swap = true,
-                    .window_leave_fullscreen, .window_enter_fullscreen => log.info("lel", .{}),
                     .key_down => {
-                        switch (event.key.scancode) {
-                            .h => sel = 2,
-                            else => {},
+                        if (!event.key.repeat) {
+                            switch (event.key.scancode) {
+                                .h => sel = 2,
+                                .escape => quit = true,
+                                .f11 => {
+                                    fullscreen = !fullscreen;
+                                    _ = sdl.setWindowFullscreen(rctx.window, fullscreen);
+                                },
+                                .f10 => {
+                                    mouse_mode = !mouse_mode;
+                                    _ = sdl.setWindowRelativeMouseMode(rctx.window, mouse_mode);
+                                },
+                                else => {},
+                            }
                         }
                     },
                     else => {},
