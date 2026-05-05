@@ -237,6 +237,7 @@ pub const Context = struct {
                 .descriptorBindingVariableDescriptorCount = .True,
                 .runtimeDescriptorArray = .True,
                 .bufferDeviceAddress = .True,
+                .timelineSemaphore = .True,
             };
             var enableVK13Features: vk.PhysicalDeviceVulkan13Features = .{
                 .pNext = &enableVK12Features,
@@ -317,7 +318,7 @@ pub const RenderContext = struct {
     sc_img_views: []vk.ImageView,
     depth: Image,
     depth_ci: vk.ImageCreateInfo,
-    fences: []vk.Fence,
+    loop_tml: vk.Semaphore,
     present_semaphores: []vk.Semaphore,
     render_semaphores: []vk.Semaphore,
 
@@ -328,10 +329,10 @@ pub const RenderContext = struct {
         defer for (rctx.sc_img_views) |view| {
             vk.destroyImageView(ctx.device, view, null);
         };
-        defer for (rctx.fences, rctx.present_semaphores) |fence, smp| {
+        defer for (rctx.present_semaphores) |smp| {
             vk.destroySemaphore(ctx.device, smp, null);
-            vk.destroyFence(ctx.device, fence, null);
         };
+        vk.destroySemaphore(ctx.device, rctx.loop_tml, null);
         defer for (rctx.render_semaphores) |semaphore| {
             vk.destroySemaphore(ctx.device, semaphore, null);
         };
@@ -393,19 +394,19 @@ pub const RenderContext = struct {
             }
         }
 
-        rctx.fences = try arena.alloc(vk.Fence, frames_in_flight);
         rctx.present_semaphores = try arena.alloc(vk.Semaphore, frames_in_flight);
         rctx.render_semaphores = try arena.alloc(vk.Semaphore, rctx.sc_imgs.len);
         {
-            const fenceCI: vk.FenceCreateInfo = .{ .flags = .{ .signaled = true } };
             const semaphoreCI: vk.SemaphoreCreateInfo = .{};
-            for (rctx.fences, rctx.present_semaphores) |*fence, *semaphore| {
-                try vk.createFence(ctx.device, &fenceCI, null, fence);
+            for (rctx.present_semaphores) |*semaphore| {
                 try vk.createSemaphore(ctx.device, &.{}, null, semaphore);
             }
             for (rctx.render_semaphores) |*semaphore| {
                 try vk.createSemaphore(ctx.device, &semaphoreCI, null, semaphore);
             }
+            const tml: vk.SemaphoreTypeCreateInfo = .{ .semaphoreType = .timeline };
+            const tml_ci: vk.SemaphoreCreateInfo = .{ .pNext = &tml };
+            try vk.createSemaphore(ctx.device, &tml_ci, null, &rctx.loop_tml);
         }
 
         const depth_formats: [2]vk.Format = .{ .d32_sfloat_s8_uint, .d24_unorm_s8_uint };

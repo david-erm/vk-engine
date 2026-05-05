@@ -341,16 +341,24 @@ pub fn main(init: std.process.Init) !void {
     var image_index: u32 = 0;
     var recreate_swap: bool = false;
     var sel: u32 = 0;
-    var last_quat: Quat = .identity;
     var shader_data: ShaderData = .{};
+
+    var frame: u64 = 0;
+    var signal_val: [max_frames]u64 = @splat(0);
+
+    var frametime_acc: f32 = 0;
+
     while (!quit) {
-        try vk.waitForFences(ctx.device, 1, @ptrCast(&rctx.fences[frame_index]), .True, std.math.maxInt(u64));
-        try vk.resetFences(ctx.device, 1, @ptrCast(&rctx.fences[frame_index]));
+        const wait_info: vk.SemaphoreWaitInfo = .{ .semaphoreCount = 1, .pSemaphores = @ptrCast(&rctx.loop_tml), .pValues = &.{signal_val[frame_index]} };
+        try vk.waitSemaphores(ctx.device, &wait_info, std.math.maxInt(u64));
+        frame += 1;
+
         const elasped: f32 = @floatFromInt(Io.Clock.now(.real, io).toMicroseconds() - last_time);
         last_time = Io.Clock.now(.real, io).toMicroseconds();
         const dT = elasped / 1000000.0;
 
-        // log.info("fps: {}", .{1 / dT});
+        // log.info("frametime: {}", .{elasped / 1000});
+        frametime_acc += elasped;
 
         vk.acquireNextImageKHR(ctx.device, rctx.swapchain, std.math.maxInt(u64), rctx.present_semaphores[frame_index], null, &image_index) catch |e| switch (e) {
             error.error_out_of_dateKHR, error.suboptimalKHR => recreate_swap = true,
@@ -358,7 +366,6 @@ pub fn main(init: std.process.Init) !void {
         };
 
         const aspect = @as(f32, @floatFromInt(rctx.windowsize.width)) / @as(f32, @floatFromInt(rctx.windowsize.height));
-        last_quat = last_quat.mul(.fromAngleAxis(std.math.pi * 0.5 * dT, .{ .y = 1 })).normalize();
 
         shader_data.projection = .perspective(cam.fov, aspect, 0.1, 32.0);
         shader_data.cam = cam.pose;
@@ -479,17 +486,18 @@ pub fn main(init: std.process.Init) !void {
             try vk.endCommandBuffer(cb);
         }
 
-        const submit_info: vk.SubmitInfo = .{
-            .waitSemaphoreCount = 1,
-            .pWaitSemaphores = @ptrCast(&rctx.present_semaphores[frame_index]),
-            .pWaitDstStageMask = &.{.{ .color_attachment_output = true }},
-            .commandBufferCount = 1,
-            .pCommandBuffers = @ptrCast(&cb),
-            .signalSemaphoreCount = 1,
-            .pSignalSemaphores = @ptrCast(&rctx.render_semaphores[image_index]),
+        const present_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = rctx.render_semaphores[image_index], .stageMask = .{ .color_attachment_output = true } };
+        const loop_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = rctx.loop_tml, .stageMask = .{ .color_attachment_output = true }, .value = frame };
+        const submit_info2: vk.SubmitInfo2 = .{
+            .waitSemaphoreInfoCount = 1,
+            .pWaitSemaphoreInfos = &.{.{ .semaphore = rctx.present_semaphores[frame_index], .stageMask = .{ .color_attachment_output = true } }},
+            .commandBufferInfoCount = 1,
+            .pCommandBufferInfos = &.{.{ .commandBuffer = cb }},
+            .signalSemaphoreInfoCount = 2,
+            .pSignalSemaphoreInfos = &.{ present_signal, loop_signal },
         };
-        try vk.queueSubmit(ctx.queue, 1, @ptrCast(&submit_info), rctx.fences[frame_index]);
-
+        try vk.queueSubmit2(ctx.queue, 1, @ptrCast(&submit_info2), null);
+        signal_val[frame_index] = frame;
         frame_index = (frame_index + 1) % max_frames;
 
         const present_info: vk.PresentInfoKHR = .{
@@ -565,6 +573,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     try vk.deviceWaitIdle(ctx.device);
+    log.info("avg_framtime: {}", .{frametime_acc / @as(f32, @floatFromInt(frame))});
 }
 
 const quad_indices: [6]u16 = .{
