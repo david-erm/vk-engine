@@ -6,5 +6,16 @@ struct Render {
 	
 }
 
+
+add a post process pass
+
+finish allocator
+
 vertex pulling over
 	surely can check for performance differences
+
+lets do aimtrainer (hopefully builds into somee wildwest type shi)
+
+#####
+
+integrate bindgen to build system. extensions decided at build time.

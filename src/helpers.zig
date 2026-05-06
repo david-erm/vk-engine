@@ -219,7 +219,7 @@ pub const Context = struct {
             vk.getPhysicalDeviceQueueFamilyProperties(ctx.pdevice, &queue_count, null);
             const queue_families = try arena.alloc(vk.QueueFamilyProperties, queue_count);
             vk.getPhysicalDeviceQueueFamilyProperties(ctx.pdevice, &queue_count, queue_families.ptr);
-            while (!queue_families[ctx.qfamily].queueFlags.graphics) : (ctx.qfamily += 1) {}
+            while (!(queue_families[ctx.qfamily].queueFlags.graphics and queue_families[ctx.qfamily].queueFlags.compute)) : (ctx.qfamily += 1) {}
             try sdl.vulkan.getPresentationSupport(ctx.instance, ctx.pdevice, ctx.qfamily);
         }
 
@@ -233,11 +233,13 @@ pub const Context = struct {
             var enableVK12Features: vk.PhysicalDeviceVulkan12Features = .{
                 .descriptorIndexing = .True,
                 .shaderSampledImageArrayNonUniformIndexing = .True,
-                .descriptorBindingSampledImageUpdateAfterBind = .True,
                 .descriptorBindingVariableDescriptorCount = .True,
                 .runtimeDescriptorArray = .True,
                 .bufferDeviceAddress = .True,
                 .timelineSemaphore = .True,
+                .descriptorBindingSampledImageUpdateAfterBind = .False,
+                .descriptorBindingStorageImageUpdateAfterBind = .True,
+                .descriptorBindingPartiallyBound = .True,
             };
             var enableVK13Features: vk.PhysicalDeviceVulkan13Features = .{
                 .pNext = &enableVK12Features,
@@ -250,7 +252,7 @@ pub const Context = struct {
                 .pQueueCreateInfos = @ptrCast(&queueCI),
                 .enabledExtensionCount = 1,
                 .ppEnabledExtensionNames = &.{"VK_KHR_swapchain"},
-                .pEnabledFeatures = &.{ .samplerAnisotropy = .True, .fillModeNonSolid = .True },
+                .pEnabledFeatures = &.{ .samplerAnisotropy = .True, .fillModeNonSolid = .False },
             }, null, &ctx.device);
             vk.loadDevice(ctx.device);
             vk.getDeviceQueue(ctx.device, ctx.qfamily, 0, &ctx.queue);
@@ -316,6 +318,7 @@ pub const RenderContext = struct {
     sc_format: vk.Format,
     sc_imgs: []vk.Image,
     sc_img_views: []vk.ImageView,
+    sc_view_dsc: []vk.DescriptorImageInfo,
     depth: Image,
     depth_ci: vk.ImageCreateInfo,
     loop_tml: vk.Semaphore,
@@ -355,8 +358,22 @@ pub const RenderContext = struct {
 
         rctx.sc_format = .b8g8r8a8_srgb;
         {
+            var format_count: u32 = 99;
+            var formats: [99]vk.SurfaceFormatKHR = undefined;
+            vk.getPhysicalDeviceSurfaceFormatsKHR(ctx.pdevice, rctx.surface, &format_count, &formats) catch |e| switch (e) {
+                error.incomplete => {},
+                else => return e,
+            };
+            // for (formats[0..14]) |format| {
+            //     std.log.info("{}", .{format});
+            // }
+            rctx.sc_format = formats[3].format;
+        }
+
+        {
             var surfaceCaps: vk.SurfaceCapabilitiesKHR = undefined;
             try vk.getPhysicalDeviceSurfaceCapabilitiesKHR(ctx.pdevice, rctx.surface, &surfaceCaps);
+            std.debug.assert(surfaceCaps.supportedUsageFlags.storage);
             rctx.swapchain_ci = .{
                 .surface = rctx.surface,
                 .minImageCount = surfaceCaps.minImageCount,
@@ -364,10 +381,10 @@ pub const RenderContext = struct {
                 .imageColorSpace = .srgb_nonlinear,
                 .imageExtent = rctx.windowsize,
                 .imageArrayLayers = 1,
-                .imageUsage = .{ .color_attachment = true },
+                .imageUsage = .{ .color_attachment = true, .storage = true },
                 .preTransform = .{ .identity = true },
                 .compositeAlpha = .{ .@"opaque" = true },
-                .presentMode = .fifo,
+                .presentMode = .immediate,
             };
             try vk.createSwapchainKHR(ctx.device, &rctx.swapchain_ci, null, &rctx.swapchain);
         }
@@ -391,6 +408,11 @@ pub const RenderContext = struct {
                     },
                 };
                 try vk.createImageView(ctx.device, &image_viewCI, null, &rctx.sc_img_views[i]);
+            }
+            rctx.sc_view_dsc = try arena.alloc(vk.DescriptorImageInfo, rctx.sc_img_views.len);
+            for (rctx.sc_view_dsc, 0..) |*desc, i| {
+                desc.imageView = rctx.sc_img_views[i];
+                desc.imageLayout = .general;
             }
         }
 
@@ -475,10 +497,14 @@ pub const RenderContext = struct {
                 .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
             };
             try vk.createImageView(ctx.device, &ci, null, &rctx.sc_img_views[i]);
+            rctx.sc_view_dsc[i].imageView = rctx.sc_img_views[i];
+            rctx.sc_view_dsc[i].imageLayout = .general;
         }
 
+        for (rctx.render_semaphores) |smp| {
+            vk.destroySemaphore(ctx.device, smp, null);
+        }
         for (rctx.render_semaphores) |*smp| {
-            vk.destroySemaphore(ctx.device, smp.*, null);
             try vk.createSemaphore(ctx.device, &.{}, null, smp);
         }
 

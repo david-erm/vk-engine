@@ -27,6 +27,7 @@ const Param = struct {
 const Stage = enum {
     vertex,
     fragment,
+    compute,
 };
 
 const EntryPoint = struct {
