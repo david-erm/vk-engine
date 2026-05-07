@@ -356,19 +356,22 @@ pub const RenderContext = struct {
         });
         rctx.surface = try sdl.vulkan.createSurface(rctx.window, ctx.instance, null);
 
-        rctx.sc_format = .b8g8r8a8_srgb;
-        {
-            var format_count: u32 = 99;
-            var formats: [99]vk.SurfaceFormatKHR = undefined;
-            vk.getPhysicalDeviceSurfaceFormatsKHR(ctx.pdevice, rctx.surface, &format_count, &formats) catch |e| switch (e) {
-                error.incomplete => {},
-                else => return e,
-            };
-            // for (formats[0..14]) |format| {
-            //     std.log.info("{}", .{format});
-            // }
-            rctx.sc_format = formats[3].format;
-        }
+        rctx.sc_format = try fmt: {
+            var format_count: u32 = 0;
+            try vk.getPhysicalDeviceSurfaceFormatsKHR(ctx.pdevice, rctx.surface, &format_count, null);
+            const formats = try arena.alloc(vk.SurfaceFormatKHR, format_count);
+            defer arena.free(formats);
+            try vk.getPhysicalDeviceSurfaceFormatsKHR(ctx.pdevice, rctx.surface, &format_count, formats.ptr);
+            for (formats) |format| {
+                var props: vk.FormatProperties2 = .{};
+                vk.getPhysicalDeviceFormatProperties2(ctx.pdevice, format.format, &props);
+                log.info("format: {}", .{format.format});
+                if (props.formatProperties.linearTilingFeatures.storage_image) {
+                    break :fmt format.format;
+                }
+            }
+            break :fmt error.FormatNotFound;
+        };
 
         {
             var surfaceCaps: vk.SurfaceCapabilitiesKHR = undefined;
@@ -384,7 +387,7 @@ pub const RenderContext = struct {
                 .imageUsage = .{ .color_attachment = true, .storage = true },
                 .preTransform = .{ .identity = true },
                 .compositeAlpha = .{ .@"opaque" = true },
-                .presentMode = .immediate,
+                .presentMode = .fifo,
             };
             try vk.createSwapchainKHR(ctx.device, &rctx.swapchain_ci, null, &rctx.swapchain);
         }

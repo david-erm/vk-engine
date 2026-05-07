@@ -1,21 +1,14 @@
-struct Render {
-	opaque:
-	opaque_pipeline:
-	translucent:
-	translucent_pipeline:
-	
-}
+#WORK: 
+integrate bindgen to build system. extensions decided at build time.
 
-
+#CHALLENGE:
 add a post process pass
-
-finish allocator
-
 vertex pulling over
 	surely can check for performance differences
+finish allocator
 
+#GOAL:
+start making abstractions
 lets do aimtrainer (hopefully builds into somee wildwest type shi)
 
-#####
 
-integrate bindgen to build system. extensions decided at build time.

@@ -12,8 +12,9 @@ void main(uint2 id : SV_DispatchThreadID, uniform uint image_index) {
     //     }
     // }
     RWTexture2D image = images[image_index];
-    float avg = (image[id].r + image[id].g + image[id].b) / 3;
-    image[id].rgb = float3(avg);
-    // images[image_index][id].rgb = images[image_index][id].rgb * images[image_index][id].rgb;
+    // float3 color = image[id].rgb;
+    // float avg = (color.r + color.g + color.b) / 3;
+    // image[id].rgb = float3(avg);
+    image[id].rgba = image[id].brga;
 }
 
