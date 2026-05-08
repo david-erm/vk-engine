@@ -1,20 +1,15 @@
 RWTexture2D images[];
 
+
+// static float3 colors[4] = {float3(0.1), float3(0.2), float3(0.3), float3(0.4)}; 
+
 [shader("compute")]
-[numthreads(8, 8)]
-void main(uint2 id : SV_DispatchThreadID, uniform uint image_index) {
-    // float3 color_accum = float3(0);
-    // uint pixel_count = 0;
-    // for (int i = -1; i < 2; i++) {
-    //     for (int j = -1; j < 2; j++) {
-    //         color_accum = image[uint2(id.x + i, id.y + j)].rgb;
-    //         pixel_count++;
-    //     }
-    // }
+[numthreads(16, 16, 1)]
+void main(uint2 id : SV_DispatchThreadID, uniform uint image_index, uint3 wid : SV_GroupID) {
     RWTexture2D image = images[image_index];
-    // float3 color = image[id].rgb;
-    // float avg = (color.r + color.g + color.b) / 3;
-    // image[id].rgb = float3(avg);
     image[id].rgba = image[id].brga;
+    // float3 fwid = wid;
+    // float2 fid = id;
+    // image[id].rgb = colors[(wid.x + wid.y) % 4];
 }
 

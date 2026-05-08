@@ -5,7 +5,7 @@ const log = std.log.scoped(.howtovulkan);
 const vk = @import("vk");
 const shaders = @import("shaders");
 
-const zkf = @import("helpers.zig");
+const zkf = @import("zkf.zig");
 const sdl = @import("sdl.zig");
 const vma = @import("vma.zig");
 const ktx = @import("ktx.zig");
@@ -40,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
 
     var ctx: zkf.Context = try .init(arena);
     defer ctx.deinit();
-    var rctx: zkf.RenderContext = try .init(&ctx, arena, 800, 600, "testing", max_frames);
+    var rctx: zkf.RenderContext = try .init(&ctx, arena, 1920, 1080, "testing", max_frames);
     defer rctx.deinit(ctx);
 
     //mem
@@ -158,7 +158,7 @@ pub fn main(init: std.process.Init) !void {
     {
         const sizes: []const vk.DescriptorPoolSize = &.{
             .{ .descriptorCount = 10000, .type = .combined_image_sampler },
-            .{ .descriptorCount = 3, .type = .storage_image },
+            .{ .descriptorCount = 100, .type = .storage_image },
         };
         const pool_ci: vk.DescriptorPoolCreateInfo = .{ .maxSets = 2, .poolSizeCount = @intCast(sizes.len), .pPoolSizes = sizes.ptr, .flags = .{ .update_after_bind = true } };
         try vk.createDescriptorPool(ctx.device, &pool_ci, null, &desc_pool);
@@ -329,11 +329,15 @@ pub fn main(init: std.process.Init) !void {
     var post_desc_layout: vk.DescriptorSetLayout = undefined;
     defer vk.destroyDescriptorSetLayout(ctx.device, post_desc_layout, null);
     {
-        const flags: vk.DescriptorBindingFlags = .{ .update_after_bind = true };
+        const flags: vk.DescriptorBindingFlags = .{
+            .update_after_bind = true,
+            .variable_descriptor_count = true,
+            .partially_bound = true,
+        };
         const flags_ci: vk.DescriptorSetLayoutBindingFlagsCreateInfo = .{ .pBindingFlags = @ptrCast(&flags), .bindingCount = 1 };
         const bind: vk.DescriptorSetLayoutBinding = .{
             .binding = 0,
-            .descriptorCount = 3,
+            .descriptorCount = 10,
             .descriptorType = .storage_image,
             .stageFlags = .{ .compute = true },
         };
@@ -380,10 +384,16 @@ pub fn main(init: std.process.Init) !void {
 
     var box_set: vk.DescriptorSet = undefined;
     {
+        const counts: u32 = @intCast(rctx.sc_view_dsc.len);
+        const vai: vk.DescriptorSetVariableDescriptorCountAllocateInfo = .{
+            .descriptorSetCount = 1,
+            .pDescriptorCounts = @ptrCast(&counts),
+        };
         const ai: vk.DescriptorSetAllocateInfo = .{
             .descriptorPool = desc_pool,
             .descriptorSetCount = 1,
             .pSetLayouts = @ptrCast(&post_desc_layout),
+            .pNext = &vai,
         };
         try vk.allocateDescriptorSets(ctx.device, &ai, @ptrCast(&box_set));
     }
@@ -395,6 +405,7 @@ pub fn main(init: std.process.Init) !void {
         .pImageInfo = rctx.sc_view_dsc.ptr,
     };
     vk.updateDescriptorSets(ctx.device, 1, @ptrCast(&write), 0, undefined);
+    log.info("{}", .{rctx.sc_img_views.len});
 
     var shader_buffers: [max_frames]zkf.Buffer = undefined;
     defer for (shader_buffers) |buffer| {
@@ -420,6 +431,8 @@ pub fn main(init: std.process.Init) !void {
     var signal_val: [max_frames]u64 = @splat(0);
 
     var frametime_acc: f32 = 0;
+    const frametime_goal = 8333;
+    var diff_acc: f32 = 0;
 
     while (!quit) {
         const wait_info: vk.SemaphoreWaitInfo = .{ .semaphoreCount = 1, .pSemaphores = @ptrCast(&rctx.loop_tml), .pValues = &.{signal_val[frame_index]} };
@@ -436,6 +449,7 @@ pub fn main(init: std.process.Init) !void {
         const dT = elasped / 1000000.0;
 
         frametime_acc += elasped;
+        diff_acc += @abs(frametime_goal - elasped);
 
         const aspect = @as(f32, @floatFromInt(rctx.windowsize.width)) / @as(f32, @floatFromInt(rctx.windowsize.height));
 
@@ -557,7 +571,7 @@ pub fn main(init: std.process.Init) !void {
             vk.cmdBindPipeline(cb, .compute, boxblur_pipeline);
             vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&box_set), 0, undefined);
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 0, 4, @ptrCast(&image_index));
-            vk.cmdDispatch(cb, 360, 206, 1);
+            vk.cmdDispatch(cb, (rctx.windowsize.width / shaders.box.local_size[0]) + 1, (rctx.windowsize.height / shaders.box.local_size[1]) + 1, 1);
 
             const present_barrier: vk.ImageMemoryBarrier2 = .{
                 .srcStageMask = .{ .compute_shader = true },
@@ -666,7 +680,8 @@ pub fn main(init: std.process.Init) !void {
     }
 
     try vk.deviceWaitIdle(ctx.device);
-    log.info("avg_framtime: {}", .{frametime_acc / @as(f32, @floatFromInt(frame))});
+    const fframe: f32 = @floatFromInt(frame);
+    log.info("avg_framtime: {}\tavg_diff from {}: {}", .{ frametime_acc / fframe, frametime_goal, diff_acc / fframe });
 }
 
 const quad_indices: [6]u16 = .{

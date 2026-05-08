@@ -1,14 +1,18 @@
-#WORK: 
+# WORK: 
 integrate bindgen to build system. extensions decided at build time.
 
-#CHALLENGE:
+# CHALLENGE:
 add a post process pass
 vertex pulling over
-	surely can check for performance differences
+    surely can check for performance differences
 finish allocator
 
-#GOAL:
+# GOAL:
 start making abstractions
 lets do aimtrainer (hopefully builds into somee wildwest type shi)
+
+# IDEA:
+separate type definitions into its own module so that generated files can consume them?
+
 
 

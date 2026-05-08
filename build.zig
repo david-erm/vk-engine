@@ -115,11 +115,12 @@ pub fn compileShaders(
         const json = slangc.addOutputFileArg(b.fmt("{s}.json", .{filename}));
         codegen_step.addFileArg(json);
 
+        // for debuggin
         b.getInstallStep().dependOn(&b.addInstallFileWithDir(json, .{ .custom = "json" }, b.fmt("{s}.json", .{filename})).step);
 
         slangc.addFileArg(b.path(path));
         slangc.addArgs(&.{ "-matrix-layout-column-major", "-target", "spirv", "-o" });
-        const spirv = slangc.addOutputFileArg(filename);
+        const spirv = slangc.addOutputFileArg(b.fmt("{s}.spv", .{filename}));
 
         const zig = codegen_step.addOutputFileArg(b.fmt("{s}.zig", .{filename}));
         shaders.addAnonymousImport(filename, .{

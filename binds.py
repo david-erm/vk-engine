@@ -49,8 +49,6 @@ types["VkDeviceAddress"] = "DeviceAddress"
 # complete random stuff
 types["VkRemoteAddressNV"] = "?*anyopaque"
 
-# used to exlude them because they have definitions coming in from other headers
-
 enabled = [
     "VK_VERSION_1_0",
     "VK_VERSION_1_1",

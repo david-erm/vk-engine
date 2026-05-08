@@ -1,4 +1,4 @@
-const h = @import("helpers.zig");
+const h = @import("zkf.zig");
 const vk = @import("vk");
 pub const ErrorEnum = enum(u32) {
     Success = 0,

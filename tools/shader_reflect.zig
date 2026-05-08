@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const log = std.log.scoped(.shader_reflect);
 const Io = std.Io;
 
@@ -33,6 +34,7 @@ const Stage = enum {
 const EntryPoint = struct {
     name: []const u8,
     stage: Stage,
+    threadGroupSize: ?[3]f32 = null,
     parameters: []Param,
 };
 
@@ -66,14 +68,6 @@ pub fn main(init: std.process.Init) !void {
     };
     defer shader_gen.close(io);
 
-    // try shader_gen.writeStreamingAll(io,
-    //     \\pub fn getShaderModule() {
-    //     \\
-    //     \\
-    //     \\
-    //     \\}
-    // );
-
     const size = try reflection_json.length(io);
     const buffer = try arena.alloc(u8, size);
     const read_size = try reflection_json.readPositionalAll(io, buffer, 0);
@@ -96,6 +90,11 @@ pub fn main(init: std.process.Init) !void {
                     else => {},
                 }
             }
+        }
+        if (entry.threadGroupSize) |thread_dims| {
+            var b: [128]u8 = @splat(0);
+            const local_size = try std.fmt.bufPrint(&b, "pub const local_size: [3]u32  = .{any};\n", .{thread_dims});
+            try shader_gen.writeStreamingAll(io, local_size);
         }
     }
 
