@@ -322,8 +322,8 @@ pub const RenderContext = struct {
     depth: Image,
     depth_ci: vk.ImageCreateInfo,
     loop_tml: vk.Semaphore,
-    present_semaphores: []vk.Semaphore,
-    render_semaphores: []vk.Semaphore,
+    fif_semaphore: []vk.Semaphore,
+    swapchain_semaphore: []vk.Semaphore,
 
     pub fn deinit(rctx: *RenderContext, ctx: Context) void {
         defer sdl.destroyWindow(&rctx.window);
@@ -332,11 +332,11 @@ pub const RenderContext = struct {
         defer for (rctx.sc_img_views) |view| {
             vk.destroyImageView(ctx.device, view, null);
         };
-        defer for (rctx.present_semaphores) |smp| {
+        defer for (rctx.fif_semaphore) |smp| {
             vk.destroySemaphore(ctx.device, smp, null);
         };
         vk.destroySemaphore(ctx.device, rctx.loop_tml, null);
-        defer for (rctx.render_semaphores) |semaphore| {
+        defer for (rctx.swapchain_semaphore) |semaphore| {
             vk.destroySemaphore(ctx.device, semaphore, null);
         };
         defer vma.destroyImage(ctx.vka, rctx.depth.handle, rctx.depth.allocation);
@@ -419,14 +419,14 @@ pub const RenderContext = struct {
             }
         }
 
-        rctx.present_semaphores = try arena.alloc(vk.Semaphore, frames_in_flight);
-        rctx.render_semaphores = try arena.alloc(vk.Semaphore, rctx.sc_imgs.len);
+        rctx.fif_semaphore = try arena.alloc(vk.Semaphore, frames_in_flight);
+        rctx.swapchain_semaphore = try arena.alloc(vk.Semaphore, rctx.sc_imgs.len);
         {
             const semaphoreCI: vk.SemaphoreCreateInfo = .{};
-            for (rctx.present_semaphores) |*semaphore| {
+            for (rctx.fif_semaphore) |*semaphore| {
                 try vk.createSemaphore(ctx.device, &.{}, null, semaphore);
             }
-            for (rctx.render_semaphores) |*semaphore| {
+            for (rctx.swapchain_semaphore) |*semaphore| {
                 try vk.createSemaphore(ctx.device, &semaphoreCI, null, semaphore);
             }
             const tml: vk.SemaphoreTypeCreateInfo = .{ .semaphoreType = .timeline };
@@ -504,10 +504,10 @@ pub const RenderContext = struct {
             rctx.sc_view_dsc[i].imageLayout = .general;
         }
 
-        for (rctx.render_semaphores) |smp| {
+        for (rctx.swapchain_semaphore) |smp| {
             vk.destroySemaphore(ctx.device, smp, null);
         }
-        for (rctx.render_semaphores) |*smp| {
+        for (rctx.swapchain_semaphore) |*smp| {
             try vk.createSemaphore(ctx.device, &.{}, null, smp);
         }
 

@@ -421,26 +421,31 @@ pub fn main(init: std.process.Init) !void {
         shader_buffers[i] = .init(ctx.vka, uBufferCI, .mapped_vram);
     }
 
+    //basic dt and quit
     var last_time = Io.Clock.now(.real, io).toMicroseconds();
     var quit: bool = false;
-    var sel: u32 = 0;
-    var shader_data: ShaderData = .{};
 
+    //sync stuff that really should be part of swapchain
     var recreate_swap: bool = false;
-    var frame_index: usize = 0;
-    var image_index: u32 = 0;
+    var swapchain_index: u32 = 0;
+    var fif_index: usize = 0;
     var frame: u64 = 0;
     var signal_val: [max_frames]u64 = @splat(0);
 
+    //"game stuff"
+    var shader_data: ShaderData = .{};
+    var sel: u32 = 0;
+
+    //some stats
     var frametime_acc: f32 = 0;
     const frametime_goal = 8333;
     var diff_acc: f32 = 0;
 
     while (!quit) {
-        const wait_info: vk.SemaphoreWaitInfo = .{ .semaphoreCount = 1, .pSemaphores = @ptrCast(&rctx.loop_tml), .pValues = &.{signal_val[frame_index]} };
+        const wait_info: vk.SemaphoreWaitInfo = .{ .semaphoreCount = 1, .pSemaphores = @ptrCast(&rctx.loop_tml), .pValues = &.{signal_val[fif_index]} };
         try vk.waitSemaphores(ctx.device, &wait_info, std.math.maxInt(u64));
         frame += 1;
-        vk.acquireNextImageKHR(ctx.device, rctx.swapchain, std.math.maxInt(u64), rctx.present_semaphores[frame_index], null, &image_index) catch |e| switch (e) {
+        vk.acquireNextImageKHR(ctx.device, rctx.swapchain, std.math.maxInt(u64), rctx.fif_semaphore[fif_index], null, &swapchain_index) catch |e| switch (e) {
             error.error_out_of_dateKHR, error.suboptimalKHR => recreate_swap = true,
             else => return e,
         };
@@ -454,6 +459,7 @@ pub fn main(init: std.process.Init) !void {
 
         frametime_acc += elasped;
         diff_acc += @abs(frametime_goal - elasped);
+
         //input
         {
             if (mouse_mode) {
@@ -530,9 +536,9 @@ pub fn main(init: std.process.Init) !void {
         }
         shader_data.poses[4].pos = .{ .z = -2 };
 
-        shader_buffers[frame_index].write(0, shader_data);
+        shader_buffers[fif_index].write(0, shader_data);
 
-        const cb: vk.CommandBuffer = command_buffers[frame_index];
+        const cb: vk.CommandBuffer = command_buffers[fif_index];
         try vk.resetCommandBuffer(cb, .{});
 
         {
@@ -545,7 +551,7 @@ pub fn main(init: std.process.Init) !void {
                 .dstAccessMask = .{ .color_attachment_read = true, .color_attachment_write = true },
                 .oldLayout = .undefined,
                 .newLayout = .attachment_optimal,
-                .image = rctx.sc_imgs[image_index],
+                .image = rctx.sc_imgs[swapchain_index],
                 .subresourceRange = .{ .aspectMask = .{ .color = true }, .levelCount = 1, .layerCount = 1 },
             }, .{
                 .srcStageMask = .{ .late_fragment_tests = true },
@@ -560,7 +566,7 @@ pub fn main(init: std.process.Init) !void {
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 2, .pImageMemoryBarriers = &output_barriers });
 
             const color_attach_info: vk.RenderingAttachmentInfo = .{
-                .imageView = rctx.sc_img_views[image_index],
+                .imageView = rctx.sc_img_views[swapchain_index],
                 .imageLayout = .attachment_optimal,
                 .loadOp = .clear,
                 .storeOp = .store,
@@ -597,7 +603,7 @@ pub fn main(init: std.process.Init) !void {
 
                 vk.cmdBindPipeline(cb, .graphics, pipeline);
                 vk.cmdBindDescriptorSets(cb, .graphics, pipeline_layout, 0, 1, @ptrCast(&desc_set), 0, undefined);
-                vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&shader_buffers[frame_index].address(ctx.device)));
+                vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&shader_buffers[fif_index].address(ctx.device)));
 
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&suzanne_buffer.handle), &.{0});
                 vk.cmdBindIndexBuffer(cb, suzanne_buffer.handle, vBufferSize, .uint32);
@@ -609,7 +615,7 @@ pub fn main(init: std.process.Init) !void {
 
                 vk.cmdBindPipeline(cb, .graphics, skybox_pipeline);
                 vk.cmdBindDescriptorSets(cb, .graphics, skybox_layout, 0, 1, @ptrCast(&desc_set), 0, undefined);
-                vk.cmdPushConstants(cb, skybox_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&shader_buffers[frame_index].address(ctx.device)));
+                vk.cmdPushConstants(cb, skybox_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&shader_buffers[fif_index].address(ctx.device)));
 
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&cube_buffer.handle), &.{0});
                 vk.cmdBindIndexBuffer(cb, cube_buffer.handle, @sizeOf(Vertex) * cube.vertices.items.len, .uint32);
@@ -622,7 +628,7 @@ pub fn main(init: std.process.Init) !void {
                 .dstAccessMask = .{ .shader_storage_read = true, .shader_storage_write = true },
                 .oldLayout = .attachment_optimal,
                 .newLayout = .general,
-                .image = rctx.sc_imgs[image_index],
+                .image = rctx.sc_imgs[swapchain_index],
                 .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
             };
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = @ptrCast(&compute_barrier1) });
@@ -630,7 +636,7 @@ pub fn main(init: std.process.Init) !void {
             vk.cmdBindPipeline(cb, .compute, boxblur_pipeline);
             vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&box_set), 0, undefined);
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 0, 8, @ptrCast(&mouse_pos));
-            vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 8, 4, @ptrCast(&image_index));
+            vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 8, 4, @ptrCast(&swapchain_index));
             vk.cmdDispatch(cb, (rctx.windowsize.width / shaders.box.local_size[0]) + 1, (rctx.windowsize.height / shaders.box.local_size[1]) + 1, 1);
 
             const present_barrier: vk.ImageMemoryBarrier2 = .{
@@ -640,7 +646,7 @@ pub fn main(init: std.process.Init) !void {
                 .dstAccessMask = .{},
                 .oldLayout = .general,
                 .newLayout = .present_srcKHR,
-                .image = rctx.sc_imgs[image_index],
+                .image = rctx.sc_imgs[swapchain_index],
                 .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
             };
 
@@ -652,26 +658,26 @@ pub fn main(init: std.process.Init) !void {
             try vk.endCommandBuffer(cb);
         }
 
-        const present_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = rctx.render_semaphores[image_index], .stageMask = .{ .compute_shader = true } };
+        const present_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = rctx.swapchain_semaphore[swapchain_index], .stageMask = .{ .compute_shader = true } };
         const loop_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = rctx.loop_tml, .stageMask = .{ .compute_shader = true }, .value = frame };
         const submit_info2: vk.SubmitInfo2 = .{
             .waitSemaphoreInfoCount = 1,
-            .pWaitSemaphoreInfos = &.{.{ .semaphore = rctx.present_semaphores[frame_index], .stageMask = .{ .color_attachment_output = true } }},
+            .pWaitSemaphoreInfos = &.{.{ .semaphore = rctx.fif_semaphore[fif_index], .stageMask = .{ .color_attachment_output = true } }},
             .commandBufferInfoCount = 1,
             .pCommandBufferInfos = &.{.{ .commandBuffer = cb }},
             .signalSemaphoreInfoCount = 2,
             .pSignalSemaphoreInfos = &.{ present_signal, loop_signal },
         };
         try vk.queueSubmit2(ctx.queue, 1, @ptrCast(&submit_info2), null);
-        signal_val[frame_index] = frame;
-        frame_index = (frame_index + 1) % max_frames;
+        signal_val[fif_index] = frame;
+        fif_index = (fif_index + 1) % max_frames;
 
         const present_info: vk.PresentInfoKHR = .{
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = @ptrCast(&rctx.render_semaphores[image_index]),
+            .pWaitSemaphores = @ptrCast(&rctx.swapchain_semaphore[swapchain_index]),
             .swapchainCount = 1,
             .pSwapchains = @ptrCast(&rctx.swapchain),
-            .pImageIndices = @ptrCast(&image_index),
+            .pImageIndices = @ptrCast(&swapchain_index),
         };
 
         vk.queuePresentKHR(ctx.queue, &present_info) catch |e| switch (e) {
