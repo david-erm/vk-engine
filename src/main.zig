@@ -32,7 +32,10 @@ pub const ShaderData = extern struct {
 const max_frames = 2;
 var cam: Camera = .{ .pose = .{ .pos = .{ .z = 6.0 }, .rot = .identity, .extra = 0 } };
 var fullscreen = false;
+
 var mouse_mode = true;
+var mouse_pos: Vec2 = .{ .x = 0, .y = 0 };
+var mouse_state: sdl.MouseButtonFlags = .{};
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -405,7 +408,6 @@ pub fn main(init: std.process.Init) !void {
         .pImageInfo = rctx.sc_view_dsc.ptr,
     };
     vk.updateDescriptorSets(ctx.device, 1, @ptrCast(&write), 0, undefined);
-    log.info("{}", .{rctx.sc_img_views.len});
 
     var shader_buffers: [max_frames]zkf.Buffer = undefined;
     defer for (shader_buffers) |buffer| {
@@ -438,11 +440,13 @@ pub fn main(init: std.process.Init) !void {
         const wait_info: vk.SemaphoreWaitInfo = .{ .semaphoreCount = 1, .pSemaphores = @ptrCast(&rctx.loop_tml), .pValues = &.{signal_val[frame_index]} };
         try vk.waitSemaphores(ctx.device, &wait_info, std.math.maxInt(u64));
         frame += 1;
-
         vk.acquireNextImageKHR(ctx.device, rctx.swapchain, std.math.maxInt(u64), rctx.present_semaphores[frame_index], null, &image_index) catch |e| switch (e) {
             error.error_out_of_dateKHR, error.suboptimalKHR => recreate_swap = true,
             else => return e,
         };
+
+        //reduces input latency or smth
+        // try Io.sleep(io, .fromMicroseconds(7000), .real);
 
         const elasped: f32 = @floatFromInt(Io.Clock.now(.real, io).toMicroseconds() - last_time);
         last_time = Io.Clock.now(.real, io).toMicroseconds();
@@ -450,6 +454,60 @@ pub fn main(init: std.process.Init) !void {
 
         frametime_acc += elasped;
         diff_acc += @abs(frametime_goal - elasped);
+        //input
+        {
+            if (mouse_mode) {
+                var xrel: f32 = 0;
+                var yrel: f32 = 0;
+                mouse_state = sdl.getRelativeMouseState(&xrel, &yrel);
+                cam.mouseInput(xrel, yrel);
+            } else {
+                mouse_state = sdl.getMouseState(&mouse_pos.x, &mouse_pos.y);
+            }
+
+            const keyboard_state = sdl.getKeyboardState(null);
+            var in: [4]bool = @splat(false);
+            if (keyboard_state[@intFromEnum(sdl.Scancode.w)]) {
+                in[0] = true;
+            }
+            if (keyboard_state[@intFromEnum(sdl.Scancode.s)]) {
+                in[1] = true;
+            }
+            if (keyboard_state[@intFromEnum(sdl.Scancode.d)]) {
+                in[2] = true;
+            }
+            if (keyboard_state[@intFromEnum(sdl.Scancode.a)]) {
+                in[3] = true;
+            }
+
+            cam.moveInput(dT, in);
+
+            var event: sdl.Event = undefined;
+            while (sdl.pollEvent(&event)) {
+                switch (event.type) {
+                    .quit => quit = true,
+                    .window_resized => recreate_swap = true,
+                    .key_down => {
+                        if (!event.key.repeat) {
+                            switch (event.key.scancode) {
+                                .h => sel = (sel + 1) % 3,
+                                .escape => quit = true,
+                                .f11 => {
+                                    fullscreen = !fullscreen;
+                                    _ = sdl.setWindowFullscreen(rctx.window, fullscreen);
+                                },
+                                .f10 => {
+                                    mouse_mode = !mouse_mode;
+                                    _ = sdl.setWindowRelativeMouseMode(rctx.window, mouse_mode);
+                                },
+                                else => {},
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
 
         const aspect = @as(f32, @floatFromInt(rctx.windowsize.width)) / @as(f32, @floatFromInt(rctx.windowsize.height));
 
@@ -536,6 +594,7 @@ pub fn main(init: std.process.Init) !void {
                 vk.cmdSetViewport(cb, 0, 1, @ptrCast(&vp));
                 const scissor: vk.Rect2D = .{ .extent = rctx.windowsize };
                 vk.cmdSetScissor(cb, 0, 1, @ptrCast(&scissor));
+
                 vk.cmdBindPipeline(cb, .graphics, pipeline);
                 vk.cmdBindDescriptorSets(cb, .graphics, pipeline_layout, 0, 1, @ptrCast(&desc_set), 0, undefined);
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&shader_buffers[frame_index].address(ctx.device)));
@@ -570,7 +629,8 @@ pub fn main(init: std.process.Init) !void {
 
             vk.cmdBindPipeline(cb, .compute, boxblur_pipeline);
             vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&box_set), 0, undefined);
-            vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 0, 4, @ptrCast(&image_index));
+            vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 0, 8, @ptrCast(&mouse_pos));
+            vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 8, 4, @ptrCast(&image_index));
             vk.cmdDispatch(cb, (rctx.windowsize.width / shaders.box.local_size[0]) + 1, (rctx.windowsize.height / shaders.box.local_size[1]) + 1, 1);
 
             const present_barrier: vk.ImageMemoryBarrier2 = .{
@@ -618,59 +678,6 @@ pub fn main(init: std.process.Init) !void {
             error.error_out_of_dateKHR, error.suboptimalKHR => recreate_swap = true,
             else => return e,
         };
-
-        //input
-        {
-            if (mouse_mode) {
-                var xrel: f32 = 0;
-                var yrel: f32 = 0;
-                _ = sdl.getRelativeMouseState(&xrel, &yrel);
-                cam.mouseInput(xrel, yrel);
-            }
-
-            const keyboard_state = sdl.getKeyboardState(null);
-            var in: [4]bool = @splat(false);
-            if (keyboard_state[@intFromEnum(sdl.Scancode.w)]) {
-                in[0] = true;
-            }
-            if (keyboard_state[@intFromEnum(sdl.Scancode.s)]) {
-                in[1] = true;
-            }
-            if (keyboard_state[@intFromEnum(sdl.Scancode.d)]) {
-                in[2] = true;
-            }
-            if (keyboard_state[@intFromEnum(sdl.Scancode.a)]) {
-                in[3] = true;
-            }
-
-            cam.moveInput(dT, in);
-
-            var event: sdl.Event = undefined;
-            while (sdl.pollEvent(&event)) {
-                switch (event.type) {
-                    .quit => quit = true,
-                    .window_resized => recreate_swap = true,
-                    .key_down => {
-                        if (!event.key.repeat) {
-                            switch (event.key.scancode) {
-                                .h => sel = 2,
-                                .escape => quit = true,
-                                .f11 => {
-                                    fullscreen = !fullscreen;
-                                    _ = sdl.setWindowFullscreen(rctx.window, fullscreen);
-                                },
-                                .f10 => {
-                                    mouse_mode = !mouse_mode;
-                                    _ = sdl.setWindowRelativeMouseMode(rctx.window, mouse_mode);
-                                },
-                                else => {},
-                            }
-                        }
-                    },
-                    else => {},
-                }
-            }
-        }
 
         if (recreate_swap) {
             recreate_swap = false;

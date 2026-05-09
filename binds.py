@@ -1,16 +1,18 @@
 from vulkan_object import get_vulkan_object
 import re
 
+vk = get_vulkan_object()
 
 keywords = ['and', 'or', 'inline', 'opaque']
 
 out = ""
 # namespaces
-cmds = ""
-cmd_ns = "table"
-glob = ""
-glob_ns = "global"
+table = ""
+table_ns = "table"
+
 global_cmds = ['vkEnumerateInstanceVersion', 'vkEnumerateInstanceExtensionProperties', 'vkEnumerateInstanceLayerProperties', 'vkCreateInstance']
+glob = ""
+global_ns = "global"
 instance = ""
 instance_ns = "instance"
 device = ""
@@ -18,7 +20,6 @@ device_ns = "device"
 
 pfnn = ""
 
-vk = get_vulkan_object()
 
 
 # constants get mapped here
@@ -425,7 +426,7 @@ def zig_cmd(cmd):
     prefix = ""
     if cmd.name in global_cmds:
         glob += f'\t\tpub var {cmd.name}: pfn.{cmd.name} = undefined;\n'
-        prefix = glob_ns
+        prefix = global_ns
     elif cmd.instance:
         instance += f'\t\tpub var {cmd.name}: pfn.{cmd.name} = undefined;\n'
         prefix = instance_ns
@@ -434,9 +435,9 @@ def zig_cmd(cmd):
         prefix = device_ns
 
     if cmd.returnType == "VkResult":
-        out += f'pub fn {name}({params}) ResultErr!void {{\n\treturn makeError(ResultErr, {cmd_ns}.{prefix}.{cmd.name}('
+        out += f'pub fn {name}({params}) ResultErr!void {{\n\treturn makeError(ResultErr, {table_ns}.{prefix}.{cmd.name}('
     else:
-        out += f"pub fn {name}({params}) {types[cmd.returnType]} {{\n\treturn {cmd_ns}.{prefix}.{cmd.name}("
+        out += f"pub fn {name}({params}) {types[cmd.returnType]} {{\n\treturn {table_ns}.{prefix}.{cmd.name}("
     first = True
     for param in cmd.params:
         if "type" == param.name:
@@ -519,8 +520,8 @@ print('        @field(table.device, field.name) = @ptrCast(table.device.vkGetDev
 print('    }')
 print('}')
 print(out)
-print(f'pub const {cmd_ns} = struct {{')
-print(f'\tpub const {glob_ns} = struct {{{glob}\t}};')
+print(f'pub const {table_ns} = struct {{')
+print(f'\tpub const {global_ns} = struct {{{glob}\t}};')
 print(f'\tpub const {instance_ns} = struct {{{instance}\t}};')
 print(f'\tpub const {device_ns} = struct {{{device}\t}};')
 print('};')

@@ -1,5 +1,20 @@
 module util;
 
+// public vk::binding(0, 0)] Texture2D images[];
+// public [vk::binding(0, 0)] TextureCube cubes[];
+
+public struct Pose {
+    public float4 pos;
+    public float4 rot;
+};
+
+public struct ShaderData {
+    public float4x4 projection;
+    public Pose cam;
+    public Pose poses[5];
+    public float4 lightPos;
+    public uint32_t selected;
+};
 
 //Quat operations
 public float4 qmul(float4 q1, float4 q2) {
@@ -20,16 +35,3 @@ public float3 rotate(float3 v, float4 q) {
 
 //Struct definitions
 
-public struct Pose {
-    public float4 pos;
-
-    public float4 rot;
-};
-
-public struct ShaderData {
-    public float4x4 projection;
-    public Pose cam;
-    public Pose poses[5];
-    public float4 lightPos;
-    public uint32_t selected;
-};

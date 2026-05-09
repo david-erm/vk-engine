@@ -462,11 +462,11 @@ pub const KeyboardEvent = extern struct {
 };
 
 pub const MouseButtonFlags = packed struct(u32) {
-    left: u1 = 0,
-    middle: u1 = 0,
-    right: u1 = 0,
-    x1: u1 = 0,
-    x2: u1 = 0,
+    left: bool = false,
+    middle: bool = false,
+    right: bool = false,
+    x1: bool = false,
+    x2: bool = false,
     _padding: u27 = 0,
 };
 
@@ -526,6 +526,7 @@ pub const getWindowSize = @extern(*const fn (window: Window, w: *i32, h: *i32) c
 pub const setWindowRelativeMouseMode = @extern(*const fn (window: Window, enable: bool) callconv(.c) bool, .{ .name = "SDL_SetWindowRelativeMouseMode" });
 pub const setWindowFullscreen = @extern(*const fn (window: Window, enable: bool) callconv(.c) bool, .{ .name = "SDL_SetWindowFullscreen" });
 pub const getRelativeMouseState = @extern(*const fn (xrel: *f32, yrel: *f32) callconv(.c) MouseButtonFlags, .{ .name = "SDL_GetRelativeMouseState" });
+pub const getMouseState = @extern(*const fn (x: *f32, y: *f32) callconv(.c) MouseButtonFlags, .{ .name = "SDL_GetMouseState" });
 pub const deinit = @extern(*const fn () callconv(.c) void, .{ .name = "SDL_Quit" });
 
 pub const vulkan = struct {
