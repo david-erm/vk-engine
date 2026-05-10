@@ -1,4 +1,5 @@
 import util;
+import desc;
 
 
 struct VSOutput {
@@ -6,7 +7,6 @@ struct VSOutput {
     float3 local_pos;
 };
 
-[vk::binding(0, 0)] SamplerCube cubes[];
 
 [shader("vertex")]
 VSOutput main(float3 pos, uniform ShaderData *shaderData)

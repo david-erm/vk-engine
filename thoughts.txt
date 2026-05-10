@@ -3,8 +3,8 @@ integrate bindgen to build system. extensions decided at build time.
 switch textures from stinky raw to BC7
 
 # CHALLENGE:
-get some text going with fonts
-add a post process pass
+get some text going  
+add a post process pass # now do it with a offscreen image
 vertex pulling over
     surely can check for performance differences
 finish allocator
@@ -16,6 +16,8 @@ lets do aimtrainer (hopefully builds into somee wildwest type shi)
 # IDEA:
 separate type definitions into its own module so that generated files can consume them?
 doing collisions via simpler meshes
+freetype harfbuzz for real font renderind at some point
+
 
 
 

@@ -49,6 +49,7 @@ pub fn build(b: *std.Build) !void {
         "src/shaders/shader.slang",
         "src/shaders/skybox.slang",
         "src/shaders/box.slang",
+        "src/shaders/text.slang",
     });
 
     const exe = b.addExecutable(.{

@@ -1,4 +1,5 @@
 import util;
+import desc;
 
 struct VSInput {
     float3 Pos;
@@ -16,8 +17,6 @@ struct VSOutput {
     uint32_t instanceIndex;
 };
 
-[vk::binding(0, 0)] Sampler2D textures[];
-[vk::binding(0, 0)] SamplerCube cubes[];
 
 [shader("vertex")]
 VSOutput main(VSInput input, uniform ShaderData *shaderData, uint instanceIndex : SV_VulkanInstanceID)
@@ -51,7 +50,7 @@ float4 main(VSOutput input)
     float3 specular = pow(max(dot(R, V), 0.00001), 64.0) * 0.75;
 
     float3 color;
-    color = textures[NonUniformResourceIndex(input.instanceIndex)].Sample(input.UV).rgb * input.factor;
+    color = sampled[NonUniformResourceIndex(input.instanceIndex)].Sample(input.UV).rgb * input.factor;
     return float4(color.rgb * (diffuse + float3(0.1)) + specular, 1.0);
   
 }

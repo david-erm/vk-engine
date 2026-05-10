@@ -157,7 +157,7 @@ pub fn main(init: std.process.Init) !void {
                 .binding = 0,
                 .descriptorCount = 1000,
                 .descriptorType = .combined_image_sampler,
-                .stageFlags = .{ .fragment = true },
+                .stageFlags = .{ .fragment = true, .compute = true },
             },
             .{
                 .binding = 1,
@@ -387,6 +387,26 @@ pub fn main(init: std.process.Init) !void {
         try vk.createComputePipelines(ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&boxblur_pipeline));
     }
 
+    var text_module: vk.ShaderModule = undefined;
+    defer vk.destroyShaderModule(ctx.device, text_module, null);
+    {
+        const ci: vk.ShaderModuleCreateInfo = .{
+            .codeSize = shaders.text.spirv.len,
+            .pCode = @ptrCast(&shaders.text.spirv),
+        };
+        try vk.createShaderModule(ctx.device, &ci, null, &text_module);
+    }
+
+    var text_pipeline: vk.Pipeline = undefined;
+    defer vk.destroyPipeline(ctx.device, text_pipeline, null);
+    {
+        const ci: vk.ComputePipelineCreateInfo = .{
+            .layout = post_layout,
+            .stage = .{ .stage = .{ .compute = true }, .module = text_module, .pName = "main" },
+        };
+        try vk.createComputePipelines(ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&text_pipeline));
+    }
+
     var shader_buffers: [max_frames]zkf.Buffer = undefined;
     defer for (shader_buffers) |buffer| {
         buffer.deinit(ctx.vka);
@@ -599,6 +619,9 @@ pub fn main(init: std.process.Init) !void {
                 vk.cmdBindIndexBuffer(cb, cube_buffer.handle, @sizeOf(Vertex) * cube.vertices.items.len, .uint32);
                 vk.cmdDrawIndexed(cb, @intCast(cube.indices.items.len), 1, 0, 0, 0);
             }
+            vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&desc_set), 0, undefined);
+            vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 0, 8, @ptrCast(&mouse_pos));
+            vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 8, 4, @ptrCast(&swapchain_index));
             const compute_barrier1: vk.ImageMemoryBarrier2 = .{
                 .srcStageMask = .{ .color_attachment_output = true },
                 .srcAccessMask = .{ .color_attachment_write = true },
@@ -612,11 +635,34 @@ pub fn main(init: std.process.Init) !void {
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = @ptrCast(&compute_barrier1) });
 
             vk.cmdBindPipeline(cb, .compute, boxblur_pipeline);
-            vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&desc_set), 0, undefined);
-            vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 0, 8, @ptrCast(&mouse_pos));
-            vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 8, 4, @ptrCast(&swapchain_index));
             vk.cmdDispatch(cb, (rctx.windowsize.width / shaders.box.local_size[0]) + 1, (rctx.windowsize.height / shaders.box.local_size[1]) + 1, 1);
 
+            const compute_barrier2: vk.ImageMemoryBarrier2 = .{
+                .srcStageMask = .{ .compute_shader = true },
+                .srcAccessMask = .{ .shader_storage_write = true },
+                .dstStageMask = .{ .compute_shader = true },
+                .dstAccessMask = .{ .shader_storage_read = true, .shader_storage_write = true },
+                .oldLayout = .general,
+                .newLayout = .general,
+                .image = rctx.sc_imgs[swapchain_index],
+                .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
+            };
+            vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = @ptrCast(&compute_barrier2) });
+
+            vk.cmdBindPipeline(cb, .compute, text_pipeline);
+            // vk.cmdDispatch(cb, 32, 32, 1);
+            vk.cmdDispatchBase(cb, 2 * 32, 32, 0, (8 * 4), (8 * 4), 1);
+
+            // const present_barrier: vk.ImageMemoryBarrier2 = .{
+            //     .srcStageMask = .{ .color_attachment_output = true },
+            //     .srcAccessMask = .{ .color_attachment_write = true },
+            //     .dstStageMask = .{ .color_attachment_output = true },
+            //     .dstAccessMask = .{},
+            //     .oldLayout = .attachment_optimal,
+            //     .newLayout = .present_srcKHR,
+            //     .image = rctx.sc_imgs[swapchain_index],
+            //     .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
+            // };
             const present_barrier: vk.ImageMemoryBarrier2 = .{
                 .srcStageMask = .{ .compute_shader = true },
                 .srcAccessMask = .{ .shader_storage_write = true },

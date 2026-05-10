@@ -1,16 +1,12 @@
-[vk::binding(0, 0)] Sampler2D sampled[];
-[vk::binding(1, 0)] RWTexture2D images[];
+import desc;
 
-
-// static float3 colors[4] = {float3(0.1), float3(0.2), float3(0.3), float3(0.4)}; 
 struct Push {
     float2 cursorpos;
     uint image_index;
 };
 
-
 [shader("compute")]
-[numthreads(16, 16, 1)]
+[numthreads(8, 8, 1)]
 void main(uint2 id : SV_DispatchThreadID, uniform Push push) {
     RWTexture2D image = images[push.image_index];
     // float3 fwid = wid;
@@ -20,7 +16,7 @@ void main(uint2 id : SV_DispatchThreadID, uniform Push push) {
     if (10 > distance(pos, fid)) {    
         image[id].rgb = float3(0.1, 0.3, 0.0);
     } else {
-        image[id].rgb = image[id].brg;
+        image[id].rgb = image[id].bgr;
     }
     // image[id].rgb = colors[(wid.x + wid.y) % 4];
 }

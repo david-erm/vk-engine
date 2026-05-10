@@ -285,31 +285,6 @@ pub const Image = struct {
     view: vk.ImageView,
     allocation: vma.Allocation,
     format: vk.Format,
-
-    // pub fn deinit(img: *Image, ctx: *const Context) void {
-    //     vk.destroyImageView(ctx.device, img.view, null);
-    //     vma.destroyImage(ctx.vka, img.handle, img.allocation);
-    // }
-
-    // pub fn init(ctx: *const Context, img_ci: vk.ImageCreateInfo) Image {
-    //     const img: Image = undefined;
-    //     img.format = img_ci.format;
-
-    //     const alloc_ci: vma.AllocationCreateInfo = .{ .usage = .auto };
-    //     _ = vma.createImage(ctx.vka, &img_ci, &alloc_ci, &img.handle, &img.allocation, null);
-
-    //     const depthImageViewCI: vk.ImageViewCreateInfo = .{
-    //         .format = img_ci.format,
-    //         .viewType = img_ci.,
-    //         .image = depth_image,
-    //         .subresourceRange = .{
-    //             .aspectMask = .{ .depth = true },
-    //             .layerCount = 1,
-    //             .levelCount = 1,
-    //         },
-    //     };
-    //     try vk.createImageView(ctx.device, &depthImageViewCI, null, &depth_image_view);
-    // }
 };
 
 pub const RenderContext = struct {
@@ -369,12 +344,13 @@ pub const RenderContext = struct {
                 var props: vk.FormatProperties2 = .{};
                 vk.getPhysicalDeviceFormatProperties2(ctx.pdevice, format.format, &props);
                 log.info("format: {}", .{format.format});
-                if (props.formatProperties.linearTilingFeatures.storage_image) {
+                if (props.formatProperties.optimalTilingFeatures.storage_image) {
                     break :fmt format.format;
                 }
             }
             break :fmt error.FormatNotFound;
         };
+        rctx.sc_format = .a2b10g10r10_unorm_pack32;
 
         {
             var surfaceCaps: vk.SurfaceCapabilitiesKHR = undefined;
