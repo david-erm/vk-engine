@@ -107,7 +107,7 @@ pub fn main(init: std.process.Init) !void {
         try vk.allocateCommandBuffers(ctx.device, &cmdBufferCI, &command_buffers);
     }
 
-    var texture_descriptors: [4]vk.DescriptorImageInfo = undefined;
+    var texture_descriptors: [5]vk.DescriptorImageInfo = undefined;
 
     const skybox = try zkf.loadImage(arena, "assets/skybox.ktx2", ctx.device, ctx.vka, ctx.queue, commandPool);
     defer vma.destroyImage(ctx.vka, skybox.image, skybox.alon);
@@ -116,6 +116,13 @@ pub fn main(init: std.process.Init) !void {
     texture_descriptors[3].imageLayout = .read_only_optimal;
     texture_descriptors[3].sampler = skybox.sampler;
     texture_descriptors[3].imageView = skybox.view;
+    const font = try zkf.loadImage(arena, "assets/font.ktx2", ctx.device, ctx.vka, ctx.queue, commandPool);
+    defer vma.destroyImage(ctx.vka, font.image, font.alon);
+    defer vk.destroyImageView(ctx.device, font.view, null);
+    defer vk.destroySampler(ctx.device, font.sampler, null);
+    texture_descriptors[4].imageLayout = .read_only_optimal;
+    texture_descriptors[4].sampler = font.sampler;
+    texture_descriptors[4].imageView = font.view;
 
     //textures
     var textures: [3]Texture = undefined;
@@ -140,18 +147,29 @@ pub fn main(init: std.process.Init) !void {
     var desc_layout: vk.DescriptorSetLayout = undefined;
     defer vk.destroyDescriptorSetLayout(ctx.device, desc_layout, null);
     {
-        const desc_flags: vk.DescriptorBindingFlags = .{ .variable_descriptor_count = true, .partially_bound = true };
-        const desc_bind_flags: vk.DescriptorSetLayoutBindingFlagsCreateInfo = .{ .pBindingFlags = @ptrCast(&desc_flags), .bindingCount = 1 };
-        const desc_layout_bind_tex: vk.DescriptorSetLayoutBinding = .{
-            .binding = 0,
-            .stageFlags = .{ .fragment = true },
-            .descriptorType = .combined_image_sampler,
-            .descriptorCount = 10000,
+        const flags: [2]vk.DescriptorBindingFlags = .{
+            .{ .partially_bound = true, .update_unused_while_pending = false },
+            .{ .partially_bound = true, .update_unused_while_pending = false },
+        };
+        const desc_bind_flags: vk.DescriptorSetLayoutBindingFlagsCreateInfo = .{ .pBindingFlags = &flags, .bindingCount = 2 };
+        const bindings = [_]vk.DescriptorSetLayoutBinding{
+            .{
+                .binding = 0,
+                .descriptorCount = 1000,
+                .descriptorType = .combined_image_sampler,
+                .stageFlags = .{ .fragment = true },
+            },
+            .{
+                .binding = 1,
+                .descriptorCount = 100,
+                .descriptorType = .storage_image,
+                .stageFlags = .{ .compute = true },
+            },
         };
         const desc_layout_ci: vk.DescriptorSetLayoutCreateInfo = .{
             .pNext = &desc_bind_flags,
-            .pBindings = @ptrCast(&desc_layout_bind_tex),
-            .bindingCount = 1,
+            .pBindings = &bindings,
+            .bindingCount = 2,
         };
         try vk.createDescriptorSetLayout(ctx.device, &desc_layout_ci, null, &desc_layout);
     }
@@ -160,36 +178,44 @@ pub fn main(init: std.process.Init) !void {
     defer vk.destroyDescriptorPool(ctx.device, desc_pool, null);
     {
         const sizes: []const vk.DescriptorPoolSize = &.{
-            .{ .descriptorCount = 10000, .type = .combined_image_sampler },
+            .{ .descriptorCount = 1000, .type = .combined_image_sampler },
             .{ .descriptorCount = 100, .type = .storage_image },
         };
-        const pool_ci: vk.DescriptorPoolCreateInfo = .{ .maxSets = 2, .poolSizeCount = @intCast(sizes.len), .pPoolSizes = sizes.ptr, .flags = .{ .update_after_bind = true } };
+        const pool_ci: vk.DescriptorPoolCreateInfo = .{
+            .maxSets = 2,
+            .poolSizeCount = @intCast(sizes.len),
+            .pPoolSizes = sizes.ptr,
+        };
         try vk.createDescriptorPool(ctx.device, &pool_ci, null, &desc_pool);
     }
 
     var desc_set: vk.DescriptorSet = undefined;
+    var writes: [2]vk.WriteDescriptorSet = undefined;
     {
-        const counts: u32 = @intCast(texture_descriptors.len);
-        const set_vai: vk.DescriptorSetVariableDescriptorCountAllocateInfo = .{
-            .pDescriptorCounts = @ptrCast(&counts),
-            .descriptorSetCount = 1,
-        };
         const set_ai: vk.DescriptorSetAllocateInfo = .{
             .descriptorPool = desc_pool,
             .descriptorSetCount = 1,
             .pSetLayouts = @ptrCast(&desc_layout),
-            .pNext = &set_vai,
         };
         try vk.allocateDescriptorSets(ctx.device, &set_ai, @ptrCast(&desc_set));
-
-        const write_desc_set: vk.WriteDescriptorSet = .{
-            .descriptorCount = counts,
-            .descriptorType = .combined_image_sampler,
-            .dstBinding = 0,
-            .dstSet = desc_set,
-            .pImageInfo = &texture_descriptors,
+        writes = .{
+            .{
+                .dstSet = desc_set,
+                .descriptorType = .storage_image,
+                .descriptorCount = @intCast(rctx.sc_view_dsc.len),
+                .dstBinding = 1,
+                .pImageInfo = rctx.sc_view_dsc.ptr,
+            },
+            .{
+                .dstSet = desc_set,
+                .descriptorType = .combined_image_sampler,
+                .descriptorCount = @intCast(texture_descriptors.len),
+                .dstBinding = 0,
+                .pImageInfo = &texture_descriptors,
+            },
         };
-        vk.updateDescriptorSets(ctx.device, 1, @ptrCast(&write_desc_set), 0, undefined);
+
+        vk.updateDescriptorSets(ctx.device, 2, &writes, 0, undefined);
     }
 
     var pipeline_layout: vk.PipelineLayout = undefined;
@@ -329,36 +355,12 @@ pub fn main(init: std.process.Init) !void {
         try vk.createGraphicsPipelines(ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&skybox_pipeline));
     }
 
-    var post_desc_layout: vk.DescriptorSetLayout = undefined;
-    defer vk.destroyDescriptorSetLayout(ctx.device, post_desc_layout, null);
-    {
-        const flags: vk.DescriptorBindingFlags = .{
-            .update_after_bind = true,
-            .variable_descriptor_count = true,
-            .partially_bound = true,
-        };
-        const flags_ci: vk.DescriptorSetLayoutBindingFlagsCreateInfo = .{ .pBindingFlags = @ptrCast(&flags), .bindingCount = 1 };
-        const bind: vk.DescriptorSetLayoutBinding = .{
-            .binding = 0,
-            .descriptorCount = 10,
-            .descriptorType = .storage_image,
-            .stageFlags = .{ .compute = true },
-        };
-        const ci: vk.DescriptorSetLayoutCreateInfo = .{
-            .pNext = &flags_ci,
-            .bindingCount = 1,
-            .pBindings = @ptrCast(&bind),
-            .flags = .{ .update_after_bind_pool = true },
-        };
-        try vk.createDescriptorSetLayout(ctx.device, &ci, null, &post_desc_layout);
-    }
-
     var post_layout: vk.PipelineLayout = undefined;
     defer vk.destroyPipelineLayout(ctx.device, post_layout, null);
     {
         const ci: vk.PipelineLayoutCreateInfo = .{
             .setLayoutCount = 1,
-            .pSetLayouts = @ptrCast(&post_desc_layout),
+            .pSetLayouts = @ptrCast(&desc_layout),
             .pushConstantRangeCount = shaders.box.push_constant_ranges.len,
             .pPushConstantRanges = @ptrCast(&shaders.box.push_constant_ranges),
         };
@@ -384,30 +386,6 @@ pub fn main(init: std.process.Init) !void {
         };
         try vk.createComputePipelines(ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&boxblur_pipeline));
     }
-
-    var box_set: vk.DescriptorSet = undefined;
-    {
-        const counts: u32 = @intCast(rctx.sc_view_dsc.len);
-        const vai: vk.DescriptorSetVariableDescriptorCountAllocateInfo = .{
-            .descriptorSetCount = 1,
-            .pDescriptorCounts = @ptrCast(&counts),
-        };
-        const ai: vk.DescriptorSetAllocateInfo = .{
-            .descriptorPool = desc_pool,
-            .descriptorSetCount = 1,
-            .pSetLayouts = @ptrCast(&post_desc_layout),
-            .pNext = &vai,
-        };
-        try vk.allocateDescriptorSets(ctx.device, &ai, @ptrCast(&box_set));
-    }
-
-    const write: vk.WriteDescriptorSet = .{
-        .dstSet = box_set,
-        .descriptorType = .storage_image,
-        .descriptorCount = @intCast(rctx.sc_view_dsc.len),
-        .pImageInfo = rctx.sc_view_dsc.ptr,
-    };
-    vk.updateDescriptorSets(ctx.device, 1, @ptrCast(&write), 0, undefined);
 
     var shader_buffers: [max_frames]zkf.Buffer = undefined;
     defer for (shader_buffers) |buffer| {
@@ -634,7 +612,7 @@ pub fn main(init: std.process.Init) !void {
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = @ptrCast(&compute_barrier1) });
 
             vk.cmdBindPipeline(cb, .compute, boxblur_pipeline);
-            vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&box_set), 0, undefined);
+            vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&desc_set), 0, undefined);
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 0, 8, @ptrCast(&mouse_pos));
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 8, 4, @ptrCast(&swapchain_index));
             vk.cmdDispatch(cb, (rctx.windowsize.width / shaders.box.local_size[0]) + 1, (rctx.windowsize.height / shaders.box.local_size[1]) + 1, 1);
@@ -688,7 +666,7 @@ pub fn main(init: std.process.Init) !void {
         if (recreate_swap) {
             recreate_swap = false;
             try rctx.recreate_swap(&ctx);
-            vk.updateDescriptorSets(ctx.device, 1, @ptrCast(&write), 0, undefined);
+            vk.updateDescriptorSets(ctx.device, 1, @ptrCast(&writes[0]), 0, undefined);
         }
     }
 

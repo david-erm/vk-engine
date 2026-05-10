@@ -233,18 +233,21 @@ pub const Context = struct {
             var enableVK12Features: vk.PhysicalDeviceVulkan12Features = .{
                 .descriptorIndexing = .True,
                 .shaderSampledImageArrayNonUniformIndexing = .True,
-                .descriptorBindingVariableDescriptorCount = .True,
                 .runtimeDescriptorArray = .True,
                 .bufferDeviceAddress = .True,
                 .timelineSemaphore = .True,
-                .descriptorBindingSampledImageUpdateAfterBind = .False,
-                .descriptorBindingStorageImageUpdateAfterBind = .True,
                 .descriptorBindingPartiallyBound = .True,
+                //turned off, was used at some point
+                .descriptorBindingUpdateUnusedWhilePending = .False,
+                .descriptorBindingVariableDescriptorCount = .False,
             };
-            var enableVK13Features: vk.PhysicalDeviceVulkan13Features = .{
+            const enableVK13Features: vk.PhysicalDeviceVulkan13Features = .{
                 .pNext = &enableVK12Features,
                 .synchronization2 = .True,
                 .dynamicRendering = .True,
+            };
+            const enableVKFeatures: vk.PhysicalDeviceFeatures = .{
+                .samplerAnisotropy = .True,
             };
             try vk.createDevice(ctx.pdevice, &.{
                 .pNext = &enableVK13Features,
@@ -252,7 +255,7 @@ pub const Context = struct {
                 .pQueueCreateInfos = @ptrCast(&queueCI),
                 .enabledExtensionCount = 1,
                 .ppEnabledExtensionNames = &.{"VK_KHR_swapchain"},
-                .pEnabledFeatures = &.{ .samplerAnisotropy = .True, .fillModeNonSolid = .False },
+                .pEnabledFeatures = &enableVKFeatures,
             }, null, &ctx.device);
             vk.loadDevice(ctx.device);
             vk.getDeviceQueue(ctx.device, ctx.qfamily, 0, &ctx.queue);
