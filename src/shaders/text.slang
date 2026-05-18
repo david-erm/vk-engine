@@ -1,18 +1,33 @@
 import desc;
+import util;
 
-struct Push {
-    float2 cursorpos;
-    uint image_index;
+
+struct VSInput {
+    float4 vertex;  
 };
 
-[shader("compute")]
-[numthreads(12, 12, 1)]
-void main(uint2 id : SV_DispatchThreadID, uniform Push push) {
-    RWTexture2D swapchain = images[push.image_index];
-    Texture2D bitmap = textures[4];  
-    float4 color = bitmap.Load(int3((id / 4)% 96, 0));
-    if (color.a > 0.1) {
-        swapchain[id].rgb = float3(0.1, 0.0, 0.0);
-    }
+struct VSOut {
+    float4 Pos : SV_Position;
+    float2 tex_coords;
+    uint instance;
+};
 
+[shader("vertex")]
+VSOut main(VSInput input, uniform ShaderData* shader_data, uint instance : SV_VulkanInstanceID) {
+    VSOut output;
+    output.Pos = mul(shader_data->ortho, float4(input.vertex.xy, 0.0, 1.0));
+    output.tex_coords = input.vertex.zw;
+    output.instance = instance;
+    
+    return output;
 }
+
+[shader("fragment")]
+float4 main(VSOut input) {
+    uint8_t color = usampled[NonUniformResourceIndex(4 + input.instance)].Sample(input.tex_coords).r;
+    if (color < 128) {
+        discard;
+    }
+    return float4(0.0, 0.8, 0.2, 1.0);
+}
+

@@ -3,6 +3,15 @@ import re
 
 vk = get_vulkan_object()
 
+enabled = [
+    "VK_VERSION_1_0",
+    "VK_VERSION_1_1",
+    "VK_VERSION_1_2",
+    "VK_VERSION_1_3",
+    "VK_KHR_swapchain",
+    "VK_KHR_surface",
+]
+
 keywords = ['and', 'or', 'inline', 'opaque']
 
 out = ""
@@ -19,8 +28,6 @@ device = ""
 device_ns = "device"
 
 pfnn = ""
-
-
 
 # constants get mapped here
 vals = {}
@@ -49,15 +56,6 @@ types["VkDeviceAddress"] = "DeviceAddress"
 
 # complete random stuff
 types["VkRemoteAddressNV"] = "?*anyopaque"
-
-enabled = [
-    "VK_VERSION_1_0",
-    "VK_VERSION_1_1",
-    "VK_VERSION_1_2",
-    "VK_VERSION_1_3",
-    "VK_KHR_swapchain",
-    "VK_KHR_surface",
-]
 
 pascal_to_words = re.compile(r"[A-Z][a-z]+|[A-Z]+(?![a-z])|[0-9]+")
 

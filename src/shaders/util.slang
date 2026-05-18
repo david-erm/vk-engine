@@ -10,6 +10,7 @@ public struct Pose {
 
 public struct ShaderData {
     public float4x4 projection;
+    public float4x4 ortho;
     public Pose cam;
     public Pose poses[5];
     public float4 lightPos;

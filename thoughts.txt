@@ -1,9 +1,10 @@
 # WORK: 
 integrate bindgen to build system. extensions decided at build time.
 switch textures from stinky raw to BC7
+generate slang structs from zig structs
 
 # CHALLENGE:
-get some text going  
+fix the text rendering, make it actually good (Vertex pulling, only 1 quad for char? or 1 unit quad and 2 scale floats?)
 add a post process pass # now do it with a offscreen image
 vertex pulling over
     surely can check for performance differences
@@ -16,6 +17,7 @@ lets do aimtrainer (hopefully builds into somee wildwest type shi)
 # IDEA:
 separate type definitions into its own module so that generated files can consume them?
 doing collisions via simpler meshes
+vertex pulling for some reason?
 freetype harfbuzz for real font renderind at some point
 
 

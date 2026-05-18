@@ -15,12 +15,17 @@ pub fn build(b: *std.Build) !void {
     const c = b.addTranslateC(.{
         .root_source_file = b.addWriteFiles().add("c.h",
             \\#include "tinyobj_loader_c.h"
+            \\#include <ft2build.h>
+            \\#define FT_FREETYPE_H
+            \\#include <freetype/freetype.h>
         ),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     c.addIncludePath(.{ .cwd_relative = vulkan_include });
     c.addIncludePath(b.path("src/include"));
+    c.addSystemIncludePath(.{ .cwd_relative = "/usr/include/freetype2" });
 
     const cMod = c.createModule();
     cMod.addCSourceFile(.{
@@ -38,6 +43,7 @@ pub fn build(b: *std.Build) !void {
     cMod.addIncludePath(b.path("src/include"));
     cMod.linkSystemLibrary("SDL3", .{});
     cMod.linkSystemLibrary("ktx", .{});
+    cMod.linkSystemLibrary("freetype", .{});
 
     const vk = b.createModule(.{
         .root_source_file = b.path("src/vk.zig"),

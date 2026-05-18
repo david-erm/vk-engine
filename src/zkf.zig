@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("c");
+pub const c = @import("c");
 const vk = @import("vk");
 const sdl = @import("sdl.zig");
 const vma = @import("vma.zig");
@@ -64,6 +64,17 @@ pub const Mat4 = extern struct {
         result.data[2][2] = far / (near - far);
         result.data[2][3] = -1.0;
         result.data[3][2] = -(far * near) / (far - near);
+        return result;
+    }
+
+    //RH_ZO
+    pub fn ortho(left: f32, right: f32, bottom: f32, top: f32) Mat4 {
+        var result: Mat4 = .indentity;
+        result.data[0][0] = 2 / (right - left);
+        result.data[1][1] = 2 / (top - bottom);
+        result.data[2][2] = -1;
+        result.data[3][0] = -(right + left) / (right - left);
+        result.data[3][1] = -(top + bottom) / (top - bottom);
         return result;
     }
 
@@ -350,7 +361,7 @@ pub const RenderContext = struct {
             }
             break :fmt error.FormatNotFound;
         };
-        rctx.sc_format = .a2b10g10r10_unorm_pack32;
+        rctx.sc_format = .b8g8r8a8_unorm;
 
         {
             var surfaceCaps: vk.SurfaceCapabilitiesKHR = undefined;
