@@ -2,6 +2,7 @@
 integrate bindgen to build system. extensions decided at build time.
 switch textures from stinky raw to BC7
 generate slang structs from zig structs
+make glyph atlas instead of texture per 
 
 # CHALLENGE:
 fix the text rendering, make it actually good (Vertex pulling, only 1 quad for char? or 1 unit quad and 2 scale floats?)

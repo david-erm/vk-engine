@@ -180,7 +180,7 @@ pub fn main(init: std.process.Init) !void {
         const glyph = face.*.glyph.*;
         const ci: vk.ImageCreateInfo = .{
             .imageType = .@"2d",
-            .format = .r8_uint,
+            .format = .r8_unorm,
             .extent = .{ .width = glyph.bitmap.width, .height = glyph.bitmap.rows, .depth = 1 },
             .samples = .{ .@"1" = true },
             .usage = .{ .transfer_dst = true, .sampled = true },
@@ -277,9 +277,11 @@ pub fn main(init: std.process.Init) !void {
         try vk.waitForFences(ctx.device, 1, &.{fence}, .True, std.math.maxInt(u64));
 
         const sampler_ci: vk.SamplerCreateInfo = .{
-            .addressModeU = .clamp_to_edge,
-            .addressModeV = .clamp_to_edge,
-            .addressModeW = .clamp_to_edge,
+            .minFilter = .linear,
+            .magFilter = .linear,
+            .addressModeU = .clamp_to_border,
+            .addressModeV = .clamp_to_border,
+            .addressModeW = .clamp_to_border,
             .anisotropyEnable = .True,
             .maxAnisotropy = 8.0,
             .borderColor = .float_transparent_black,
@@ -289,7 +291,7 @@ pub fn main(init: std.process.Init) !void {
         try vk.createSampler(ctx.device, &sampler_ci, null, &sampler);
 
         const view_ci: vk.ImageViewCreateInfo = .{
-            .format = .r8_uint,
+            .format = .r8_unorm,
             .image = img,
             .viewType = .@"2d",
             .subresourceRange = .{
@@ -579,7 +581,13 @@ pub fn main(init: std.process.Init) !void {
             .pColorAttachmentFormats = @ptrCast(&rctx.sc_format),
             .depthAttachmentFormat = .d32_sfloat_s8_uint,
         };
-        const blend_attachment: vk.PipelineColorBlendAttachmentState = .{ .colorWriteMask = @bitCast(@as(u32, 0xF)) };
+        const blend_attachment: vk.PipelineColorBlendAttachmentState = .{
+            .blendEnable = .True,
+            .colorBlendOp = .add,
+            .srcColorBlendFactor = .src_alpha,
+            .dstColorBlendFactor = .one_minus_src_alpha,
+            .colorWriteMask = @bitCast(@as(u32, 0xF)),
+        };
         var ci: vk.GraphicsPipelineCreateInfo = .{
             .pNext = &render_ci,
             .stageCount = stages.len,
