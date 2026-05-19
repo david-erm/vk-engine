@@ -25,9 +25,6 @@ VSOut main(VSInput input, uniform ShaderData* shader_data, uint instance : SV_Vu
 [shader("fragment")]
 float4 main(VSOut input) {
     float color = sampled[NonUniformResourceIndex(4 + input.instance)].Sample(input.tex_coords).r;
-    if (color < 0.1) {
-        discard;
-    }
     return float4(0.0, 0.8, 0.2, 1.0) * color;
 }
 

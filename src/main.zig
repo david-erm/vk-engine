@@ -166,11 +166,11 @@ pub fn main(init: std.process.Init) !void {
         return error.Freetype;
     }
     var face: c.FT_Face = undefined;
-    if (c.FT_New_Face(ft, "/usr/share/fonts/ibm-plex-sans-fonts/IBMPlexSans-Regular.otf", 0, &face) != 0) {
+    if (c.FT_New_Face(ft, "/usr/share/fonts/ibm-plex-sans-fonts/IBMPlexSans-Text.otf", 0, &face) != 0) {
         log.info("Failed to init face", .{});
         return error.Face;
     }
-    if (c.FT_Set_Pixel_Sizes(face, 0, 64) != 0) @panic("");
+    if (c.FT_Set_Pixel_Sizes(face, 0, 32) != 0) @panic("");
 
     for (0..128) |i| {
         if (c.FT_Load_Char(face, i, c.FT_LOAD_RENDER) != 0) {
@@ -849,36 +849,39 @@ pub fn main(init: std.process.Init) !void {
 
                 vk.cmdBindPipeline(cb, .graphics, text_pipeline);
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&text_quad.handle), &.{0});
-                const text = try std.fmt.allocPrint(arena, "frametime: {d:.3}", .{elasped / 1000});
+                const text = try std.fmt.allocPrint(arena, "frametime: {d:.3}ms±😊", .{elasped / 1000});
+                defer arena.free(text);
 
-                var pos: Vec2 = .{ .x = 50, .y = 102 };
-                const scale: f32 = 0.9;
+                var pos: Vec2 = .{ .x = mouse_pos.x, .y = mouse_pos.y };
+                const scale: f32 = 1;
                 for (text, 0..) |char, i| {
                     if (char == ' ') {
                         pos.x += @floatFromInt(space_advance >> 6);
                         continue;
                     }
                     const ch = char_map.get(char) orelse continue;
-                    const charpos: Vec2 = .{
-                        .x = pos.x + @as(f32, @floatFromInt(ch.bearingx)) * scale,
-                        .y = pos.y + @as(f32, @floatFromInt(@as(i32, @intCast(ch.height)) - ch.bearingy)) * scale,
-                    };
 
                     const w: f32 = @as(f32, @floatFromInt(ch.width)) * scale;
                     const h: f32 = @as(f32, @floatFromInt(ch.height)) * scale;
+                    const charmod: Vec2 = .{
+                        .x = @floatFromInt(ch.bearingx),
+                        .y = @floatFromInt(@as(i32, @intCast(ch.height)) - ch.bearingy),
+                    };
                     const vertices = [_]f32{
-                        charpos.x,     charpos.y - h, 0.0, 0.0,
-                        charpos.x,     charpos.y,     0.0, 1.0,
-                        charpos.x + w, charpos.y,     1.0, 1.0,
-                        charpos.x,     charpos.y - h, 0.0, 0.0,
-                        charpos.x + w, charpos.y,     1.0, 1.0,
-                        charpos.x + w, charpos.y - h, 1.0, 0.0,
+                        charmod.x + pos.x,     charmod.y + pos.y - h, 0.0, 0.0,
+                        charmod.x + pos.x,     charmod.y + pos.y,     0.0, 1.0,
+                        charmod.x + pos.x + w, charmod.y + pos.y,     1.0, 1.0,
+                        charmod.x + pos.x,     charmod.y + pos.y - h, 0.0, 0.0,
+                        charmod.x + pos.x + w, charmod.y + pos.y,     1.0, 1.0,
+                        charmod.x + pos.x + w, charmod.y + pos.y - h, 1.0, 0.0,
                     };
                     text_quad.write(quad_size * i, &vertices);
                     vk.cmdDraw(cb, 6, 1, @intCast(i * 6), char);
                     pos.x += @as(f32, @floatFromInt(ch.advance >> 6)) * scale;
                 }
             }
+
+            vk.cmdBindPipeline(cb, .compute, boxblur_pipeline);
             vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&desc_set), 0, undefined);
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 0, 8, @ptrCast(&mouse_pos));
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 8, 4, @ptrCast(&swapchain_index));
@@ -893,8 +896,6 @@ pub fn main(init: std.process.Init) !void {
                 .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
             };
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = @ptrCast(&compute_barrier1) });
-
-            vk.cmdBindPipeline(cb, .compute, boxblur_pipeline);
             vk.cmdDispatch(cb, (rctx.windowsize.width / shaders.box.local_size[0]) + 1, (rctx.windowsize.height / shaders.box.local_size[1]) + 1, 1);
 
             const compute_barrier2: vk.ImageMemoryBarrier2 = .{
