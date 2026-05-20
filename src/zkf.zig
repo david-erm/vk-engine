@@ -34,7 +34,7 @@ pub const Vec4 = extern struct {
         return .{ .x = v.x, .y = v.y, .z = v.z, .w = w };
     }
 };
-pub const Vec2 = extern struct { x: f32, y: f32 };
+pub const Vec2 = extern struct { x: f32 = 0, y: f32 = 0 };
 pub const Vertex = extern struct { pos: Vec3, norm: Vec3, uv: Vec2 };
 pub const Mat4 = extern struct {
     data: [4][4]f32,

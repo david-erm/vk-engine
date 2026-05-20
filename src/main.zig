@@ -31,16 +31,14 @@ pub const ShaderData = extern struct {
     selected: u32 = 1,
 };
 
-//really should be part of an atlas, billion small textures
-const Character = struct {
-    tex: zkf.Texture,
-    width: u32,
-    height: u32,
-    bearingx: i32,
-    bearingy: i32,
-    advance: u32,
+const Glyph = struct {
+    uv: Vec2 = .{},
+    uv_max: Vec2 = .{},
+    bearing: Vec2 = .{},
+    scale: Vec2 = .{},
+    advance: f32 = 0,
 };
-var char_map: std.AutoHashMapUnmanaged(u8, Character) = .empty;
+var charmap: std.AutoHashMapUnmanaged(u21, Glyph) = .empty;
 
 const max_frames = 2;
 var cam: Camera = .{ .pose = .{ .pos = .{ .z = 6.0 }, .rot = .identity, .extra = 0 } };
@@ -50,7 +48,7 @@ var mouse_mode = true;
 var mouse_pos: Vec2 = .{ .x = 0, .y = 0 };
 var mouse_state: sdl.MouseButtonFlags = .{};
 
-var space_advance: u32 = undefined;
+var space_advance: f32 = undefined;
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -130,7 +128,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     //textures
-    var texture_descriptors: [4 + 128]vk.DescriptorImageInfo = undefined;
+    var texture_descriptors: [5]vk.DescriptorImageInfo = undefined;
 
     const skybox = try zkf.loadImage(arena, "assets/skybox.ktx2", ctx.device, ctx.vka, ctx.queue, commandPool);
     defer vma.destroyImage(ctx.vka, skybox.image, skybox.alon);
@@ -170,73 +168,129 @@ pub fn main(init: std.process.Init) !void {
         log.info("Failed to init face", .{});
         return error.Face;
     }
-    if (c.FT_Set_Pixel_Sizes(face, 0, 32) != 0) @panic("");
+    const font_size = 32;
+    if (c.FT_Set_Pixel_Sizes(face, 0, font_size) != 0) @panic("");
 
-    for (0..128) |i| {
+    const atlas_size = 1024;
+    var atlas_offsetx: u32 = 0;
+    var atlas_offsety: u32 = 0;
+    const atlas_ci: vk.ImageCreateInfo = .{
+        .imageType = .@"2d",
+        .format = .r8_unorm,
+        .extent = .{ .width = atlas_size, .height = atlas_size, .depth = 1 },
+        .samples = .{ .@"1" = true },
+        .usage = .{ .transfer_dst = true, .sampled = true, .storage = true },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+    };
+    const atlas_ai: vma.AllocationCreateInfo = .{ .usage = .auto };
+    var atlas: vk.Image = undefined;
+    var atlas_alloc: vma.Allocation = undefined;
+    _ = vma.createImage(ctx.vka, &atlas_ci, &atlas_ai, &atlas, &atlas_alloc, null);
+    defer vma.destroyImage(ctx.vka, atlas, atlas_alloc);
+
+    const atlas_view_ci: vk.ImageViewCreateInfo = .{
+        .format = .r8_unorm,
+        .image = atlas,
+        .viewType = .@"2d",
+        .subresourceRange = .{
+            .aspectMask = .{ .color = true },
+            .layerCount = 1,
+            .levelCount = 1,
+        },
+    };
+    var atlas_view: vk.ImageView = undefined;
+    try vk.createImageView(ctx.device, &atlas_view_ci, null, &atlas_view);
+    defer vk.destroyImageView(ctx.device, atlas_view, null);
+
+    const atlas_sampler_ci: vk.SamplerCreateInfo = .{
+        .minFilter = .linear,
+        .magFilter = .linear,
+        .addressModeU = .clamp_to_border,
+        .addressModeV = .clamp_to_border,
+        .addressModeW = .clamp_to_border,
+        .anisotropyEnable = .True,
+        .maxAnisotropy = 8.0,
+        .borderColor = .float_transparent_black,
+        .maxLod = 1,
+    };
+    var atlas_sampler: vk.Sampler = undefined;
+    try vk.createSampler(ctx.device, &atlas_sampler_ci, null, &atlas_sampler);
+    defer vk.destroySampler(ctx.device, atlas_sampler, null);
+
+    texture_descriptors[4] = .{
+        .sampler = atlas_sampler,
+        .imageView = atlas_view,
+        .imageLayout = .read_only_optimal,
+    };
+
+    const semaphore_type: vk.SemaphoreTypeCreateInfo = .{ .semaphoreType = .timeline };
+    const semaphore_ci: vk.SemaphoreCreateInfo = .{ .pNext = &semaphore_type };
+    var upload_semaphore: vk.Semaphore = undefined;
+    try vk.createSemaphore(ctx.device, &semaphore_ci, null, &upload_semaphore);
+    defer vk.destroySemaphore(ctx.device, upload_semaphore, null);
+    var upload_count: u64 = 0;
+
+    var cmd_buf: vk.CommandBuffer = undefined;
+    const cmd_buf_ai: vk.CommandBufferAllocateInfo = .{ .commandPool = commandPool, .commandBufferCount = 1, .level = .primary };
+    try vk.allocateCommandBuffers(ctx.device, &cmd_buf_ai, @ptrCast(&cmd_buf));
+    defer vk.freeCommandBuffers(ctx.device, commandPool, 1, @ptrCast(&cmd_buf));
+    const cmd_binfo: vk.CommandBufferBeginInfo = .{ .flags = .{ .one_time_submit = true } };
+
+    const glyph_size = font_size * font_size;
+    const transfer_buffer_size = 5;
+    const transfer_ci: vk.BufferCreateInfo = .{ .size = glyph_size * transfer_buffer_size, .usage = .{ .transfer_src = true } };
+    const transfer_ai: vma.AllocationCreateInfo = .{ .usage = .auto, .flags = .{ .mapped_bit = true, .host_access_sequential_write_bit = true } };
+    const transfer_buffer: zkf.Buffer = .init(ctx.vka, transfer_ci, transfer_ai);
+    defer transfer_buffer.deinit(ctx.vka);
+
+    var transfer_offset: u32 = 0;
+
+    {
+        try vk.beginCommandBuffer(cmd_buf, &cmd_binfo);
+        var layout_barrier: vk.ImageMemoryBarrier2 = .{
+            .dstStageMask = .{ .all_transfer = true },
+            .dstAccessMask = .{ .transfer_write = true },
+            .oldLayout = .undefined,
+            .newLayout = .transfer_dst_optimal,
+            .image = atlas,
+            .subresourceRange = .{
+                .aspectMask = .{ .color = true },
+                .levelCount = 1,
+                .layerCount = 1,
+            },
+        };
+        var barrier_texinfo: vk.DependencyInfo = .{
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = @ptrCast(&layout_barrier),
+        };
+        vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
+    }
+
+    for (31..128) |i| {
         if (c.FT_Load_Char(face, i, c.FT_LOAD_RENDER) != 0) {
             log.info("failed to load {c}", .{@as(u8, @intCast(i))});
             continue;
         }
         const glyph = face.*.glyph.*;
-        const ci: vk.ImageCreateInfo = .{
-            .imageType = .@"2d",
-            .format = .r8_unorm,
-            .extent = .{ .width = glyph.bitmap.width, .height = glyph.bitmap.rows, .depth = 1 },
-            .samples = .{ .@"1" = true },
-            .usage = .{ .transfer_dst = true, .sampled = true },
-            .mipLevels = 1,
-            .arrayLayers = 1,
-        };
-        const ai: vma.AllocationCreateInfo = .{ .usage = .auto };
-
-        var img: vk.Image = undefined;
-        var allocation: vma.Allocation = undefined;
-        const rs = vma.createImage(ctx.vka, &ci, &ai, &img, &allocation, null);
-        if (@intFromEnum(rs) != 0) {
-            log.warn("Could not create image for {c}({d}) : {s}", .{ @as(u8, @intCast(i)), @as(u8, @intCast(i)), @tagName(rs) });
-            space_advance = @intCast(glyph.advance.x);
+        if (i == ' ') {
+            space_advance = @floatFromInt(glyph.advance.x >> 6);
             continue;
         }
 
-        const transfer_ci: vk.BufferCreateInfo = .{ .size = glyph.bitmap.rows * glyph.bitmap.width, .usage = .{ .transfer_src = true } };
-        const transfer_ai: vma.AllocationCreateInfo = .{ .usage = .auto, .flags = .{ .mapped_bit = true, .host_access_sequential_write_bit = true } };
-        const transfer_buffer: zkf.Buffer = .init(ctx.vka, transfer_ci, transfer_ai);
-        defer transfer_buffer.deinit(ctx.vka);
-        transfer_buffer.write(0, glyph.bitmap.buffer[0 .. glyph.bitmap.rows * glyph.bitmap.width]);
+        var out: Glyph = .{
+            .bearing = .{ .x = @floatFromInt(glyph.bitmap_left), .y = @floatFromInt(-glyph.bitmap_top) },
+            .advance = @floatFromInt(glyph.advance.x >> 6),
+        };
 
-        const fence_ci: vk.FenceCreateInfo = .{};
-        var fence: vk.Fence = undefined;
-        try vk.createFence(ctx.device, &fence_ci, null, &fence);
-        defer vk.destroyFence(ctx.device, fence, null);
+        transfer_buffer.write(transfer_offset * glyph_size, glyph.bitmap.buffer[0 .. glyph.bitmap.rows * glyph.bitmap.width]);
 
-        var cmd_buf: vk.CommandBuffer = undefined;
-        const cmd_buf_ai: vk.CommandBufferAllocateInfo = .{ .commandPool = commandPool, .commandBufferCount = 1, .level = .primary };
-        try vk.allocateCommandBuffers(ctx.device, &cmd_buf_ai, @ptrCast(&cmd_buf));
-        defer vk.freeCommandBuffers(ctx.device, commandPool, 1, @ptrCast(&cmd_buf));
-
-        const cmd_binfo: vk.CommandBufferBeginInfo = .{ .flags = .{ .one_time_submit = true } };
         {
-            try vk.beginCommandBuffer(cmd_buf, &cmd_binfo);
-
-            const layout_barrier: vk.ImageMemoryBarrier2 = .{
-                .dstStageMask = .{ .all_transfer = true },
-                .dstAccessMask = .{ .transfer_write = true },
-                .oldLayout = .undefined,
-                .newLayout = .transfer_dst_optimal,
-                .image = img,
-                .subresourceRange = .{
-                    .aspectMask = .{ .color = true },
-                    .levelCount = 1,
-                    .layerCount = 1,
-                },
-            };
-            var barrier_texinfo: vk.DependencyInfo = .{
-                .imageMemoryBarrierCount = 1,
-                .pImageMemoryBarriers = @ptrCast(&layout_barrier),
-            };
-            vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
-
-            const copy_regions: vk.BufferImageCopy = .{
+            if (atlas_offsetx + glyph.bitmap.width >= atlas_size) {
+                atlas_offsety += font_size;
+                atlas_offsetx = 0;
+            }
+            const copy_test: vk.BufferImageCopy = .{
                 .imageSubresource = .{
                     .aspectMask = .{ .color = true },
                     .layerCount = 1,
@@ -246,90 +300,117 @@ pub fn main(init: std.process.Init) !void {
                     .width = glyph.bitmap.width,
                     .height = glyph.bitmap.rows,
                 },
-            };
-            vk.cmdCopyBufferToImage(cmd_buf, transfer_buffer.handle, img, .transfer_dst_optimal, 1, &.{copy_regions});
-
-            const texread_barrier: vk.ImageMemoryBarrier2 = .{
-                .srcStageMask = .{ .all_transfer = true },
-                .srcAccessMask = .{ .transfer_write = true },
-                .dstStageMask = .{ .fragment_shader = true },
-                .dstAccessMask = .{ .shader_read = true },
-                .oldLayout = .transfer_dst_optimal,
-                .newLayout = .read_only_optimal,
-                .image = img,
-                .subresourceRange = .{
-                    .aspectMask = .{ .color = true },
-                    .levelCount = 1,
-                    .layerCount = 1,
+                .imageOffset = .{
+                    .x = @intCast(atlas_offsetx),
+                    .y = @intCast(atlas_offsety),
                 },
+                .bufferOffset = transfer_offset * glyph_size,
             };
-            barrier_texinfo.pImageMemoryBarriers = @ptrCast(&texread_barrier);
-            vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
+            vk.cmdCopyBufferToImage(cmd_buf, transfer_buffer.handle, atlas, .transfer_dst_optimal, 1, &.{copy_test});
+            transfer_offset += 1;
 
-            try vk.endCommandBuffer(cmd_buf);
+            out.uv = .{
+                .x = @as(f32, @floatFromInt(atlas_offsetx)) / atlas_size,
+                .y = @as(f32, @floatFromInt(atlas_offsety)) / atlas_size,
+            };
+            out.uv_max = .{
+                .x = @as(f32, @floatFromInt(atlas_offsetx + glyph.bitmap.width)) / atlas_size,
+                .y = @as(f32, @floatFromInt(atlas_offsety + glyph.bitmap.rows)) / atlas_size,
+            };
+            const yscale = @as(f32, @floatFromInt(glyph.bitmap.rows));
+            atlas_offsetx += glyph.bitmap.width + 2;
+            const ratio = (out.uv_max.x - out.uv.x) / (out.uv_max.y - out.uv.y);
+            out.scale = .{ .x = ratio * yscale, .y = yscale };
+            try charmap.put(arena, @intCast(i), out);
+
+            // const texread_barrier: vk.ImageMemoryBarrier2 = .{
+            //     .srcStageMask = .{ .all_transfer = true },
+            //     .srcAccessMask = .{ .transfer_write = true },
+            //     .dstStageMask = .{ .all_transfer = true },
+            //     .dstAccessMask = .{ .transfer_write = true },
+            //     .oldLayout = .transfer_dst_optimal,
+            //     .newLayout = .transfer_dst_optimal,
+            //     .image = atlas,
+            //     .subresourceRange = .{
+            //         .aspectMask = .{ .color = true },
+            //         .levelCount = 1,
+            //         .layerCount = 1,
+            //     },
+            // };
+            // const barrier_texinfo: vk.DependencyInfo = .{
+            //     .imageMemoryBarrierCount = 1,
+            //     .pImageMemoryBarriers = @ptrCast(&texread_barrier),
+            // };
+            // vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
+
+            if (transfer_offset == 5) {
+                try vk.endCommandBuffer(cmd_buf);
+                const smp_submit: vk.SemaphoreSubmitInfo = .{
+                    .semaphore = upload_semaphore,
+                    .stageMask = .{ .all_transfer = true },
+                    .value = upload_count + 1,
+                };
+                const submiti: vk.SubmitInfo2 = .{
+                    .commandBufferInfoCount = 1,
+                    .pCommandBufferInfos = &.{.{ .commandBuffer = cmd_buf }},
+                    .signalSemaphoreInfoCount = 1,
+                    .pSignalSemaphoreInfos = &.{smp_submit},
+                };
+                try vk.queueSubmit2(ctx.queue, 1, &.{submiti}, null);
+                const waiti: vk.SemaphoreWaitInfo = .{
+                    .semaphoreCount = 1,
+                    .pSemaphores = @ptrCast(&upload_semaphore),
+                    .pValues = &.{upload_count + 1},
+                };
+                try vk.waitSemaphores(ctx.device, &waiti, std.math.maxInt(u64));
+                upload_count += 1;
+
+                try vk.beginCommandBuffer(cmd_buf, &cmd_binfo);
+
+                transfer_offset = 0;
+            }
         }
-
-        const submiti: vk.SubmitInfo = .{
-            .commandBufferCount = 1,
-            .pCommandBuffers = &.{cmd_buf},
-        };
-        try vk.queueSubmit(ctx.queue, 1, &.{submiti}, fence);
-        try vk.waitForFences(ctx.device, 1, &.{fence}, .True, std.math.maxInt(u64));
-
-        const sampler_ci: vk.SamplerCreateInfo = .{
-            .minFilter = .linear,
-            .magFilter = .linear,
-            .addressModeU = .clamp_to_border,
-            .addressModeV = .clamp_to_border,
-            .addressModeW = .clamp_to_border,
-            .anisotropyEnable = .True,
-            .maxAnisotropy = 8.0,
-            .borderColor = .float_transparent_black,
-            .maxLod = 1,
-        };
-        var sampler: vk.Sampler = undefined;
-        try vk.createSampler(ctx.device, &sampler_ci, null, &sampler);
-
-        const view_ci: vk.ImageViewCreateInfo = .{
-            .format = .r8_unorm,
-            .image = img,
-            .viewType = .@"2d",
-            .subresourceRange = .{
-                .aspectMask = .{ .color = true },
-                .layerCount = 1,
-                .levelCount = 1,
-            },
-        };
-        var view: vk.ImageView = undefined;
-        try vk.createImageView(ctx.device, &view_ci, null, &view);
-
-        try char_map.put(arena, @intCast(i), .{
-            .tex = .{
-                .alon = allocation,
-                .image = img,
-                .view = view,
-                .sampler = sampler,
-            },
-            .width = glyph.bitmap.width,
-            .height = glyph.bitmap.rows,
-            .bearingx = glyph.bitmap_left,
-            .bearingy = glyph.bitmap_top,
-            .advance = @intCast(face.*.glyph.*.advance.x),
-        });
-        texture_descriptors[i + 4] = .{
-            .sampler = sampler,
-            .imageView = view,
-            .imageLayout = .read_only_optimal,
-        };
     }
+    var layout_barrier: vk.ImageMemoryBarrier2 = .{
+        .srcStageMask = .{ .all_transfer = true },
+        .srcAccessMask = .{ .transfer_write = true },
+        .dstStageMask = .{ .fragment_shader = true },
+        .dstAccessMask = .{ .shader_read = true },
+        .oldLayout = .transfer_dst_optimal,
+        .newLayout = .read_only_optimal,
+        .image = atlas,
+        .subresourceRange = .{
+            .aspectMask = .{ .color = true },
+            .levelCount = 1,
+            .layerCount = 1,
+        },
+    };
+    var barrier_texinfo: vk.DependencyInfo = .{
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = @ptrCast(&layout_barrier),
+    };
+    vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
+    try vk.endCommandBuffer(cmd_buf);
+    const smp_submit: vk.SemaphoreSubmitInfo = .{
+        .semaphore = upload_semaphore,
+        .stageMask = .{ .all_transfer = true },
+        .value = upload_count + 1,
+    };
+    const submiti: vk.SubmitInfo2 = .{
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos = &.{.{ .commandBuffer = cmd_buf }},
+        .signalSemaphoreInfoCount = 1,
+        .pSignalSemaphoreInfos = &.{smp_submit},
+    };
+    try vk.queueSubmit2(ctx.queue, 1, &.{submiti}, null);
+    const waiti: vk.SemaphoreWaitInfo = .{
+        .semaphoreCount = 1,
+        .pSemaphores = @ptrCast(&upload_semaphore),
+        .pValues = &.{upload_count + 1},
+    };
+    try vk.waitSemaphores(ctx.device, &waiti, std.math.maxInt(u64));
     _ = c.FT_Done_Face(face);
     _ = c.FT_Done_FreeType(ft);
-    var vals = char_map.valueIterator();
-    defer while (vals.next()) |char| {
-        vk.destroySampler(ctx.device, char.tex.sampler, null);
-        vk.destroyImageView(ctx.device, char.tex.view, null);
-        vma.destroyImage(ctx.vka, char.tex.image, char.tex.alon);
-    };
 
     var desc_layout: vk.DescriptorSetLayout = undefined;
     defer vk.destroyDescriptorSetLayout(ctx.device, desc_layout, null);
@@ -396,25 +477,13 @@ pub fn main(init: std.process.Init) !void {
             .{
                 .dstSet = desc_set,
                 .descriptorType = .combined_image_sampler,
-                .descriptorCount = 4,
+                .descriptorCount = 5,
                 .dstBinding = 0,
                 .pImageInfo = &texture_descriptors,
             },
         };
 
         vk.updateDescriptorSets(ctx.device, 2, &writes, 0, undefined);
-        var it = char_map.keyIterator();
-        while (it.next()) |par| {
-            const w: vk.WriteDescriptorSet = .{
-                .dstSet = desc_set,
-                .descriptorType = .combined_image_sampler,
-                .descriptorCount = 1,
-                .dstArrayElement = 4 + par.*,
-                .dstBinding = 0,
-                .pImageInfo = @ptrCast(&texture_descriptors[4 + par.*]),
-            };
-            vk.updateDescriptorSets(ctx.device, 1, @ptrCast(&w), 0, undefined);
-        }
     }
 
     var pipeline_layout: vk.PipelineLayout = undefined;
@@ -849,35 +918,36 @@ pub fn main(init: std.process.Init) !void {
 
                 vk.cmdBindPipeline(cb, .graphics, text_pipeline);
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&text_quad.handle), &.{0});
-                const text = try std.fmt.allocPrint(arena, "frametime: {d:.3}ms±😊", .{elasped / 1000});
+                const text = try std.fmt.allocPrint(arena, "frametimeg,: {d:.3}ms±😊", .{elasped / 1000});
+                // const text = "testing";
                 defer arena.free(text);
 
                 var pos: Vec2 = .{ .x = mouse_pos.x, .y = mouse_pos.y };
                 const scale: f32 = 1;
                 for (text, 0..) |char, i| {
                     if (char == ' ') {
-                        pos.x += @floatFromInt(space_advance >> 6);
+                        pos.x += space_advance;
                         continue;
                     }
-                    const ch = char_map.get(char) orelse continue;
+                    const ch = charmap.get(char) orelse continue;
 
-                    const w: f32 = @as(f32, @floatFromInt(ch.width)) * scale;
-                    const h: f32 = @as(f32, @floatFromInt(ch.height)) * scale;
+                    const w: f32 = ch.scale.x * scale;
+                    const h: f32 = ch.scale.y * scale;
                     const charmod: Vec2 = .{
-                        .x = @floatFromInt(ch.bearingx),
-                        .y = @floatFromInt(@as(i32, @intCast(ch.height)) - ch.bearingy),
+                        .x = ch.bearing.x,
+                        .y = ch.scale.y + ch.bearing.y,
                     };
                     const vertices = [_]f32{
-                        charmod.x + pos.x,     charmod.y + pos.y - h, 0.0, 0.0,
-                        charmod.x + pos.x,     charmod.y + pos.y,     0.0, 1.0,
-                        charmod.x + pos.x + w, charmod.y + pos.y,     1.0, 1.0,
-                        charmod.x + pos.x,     charmod.y + pos.y - h, 0.0, 0.0,
-                        charmod.x + pos.x + w, charmod.y + pos.y,     1.0, 1.0,
-                        charmod.x + pos.x + w, charmod.y + pos.y - h, 1.0, 0.0,
+                        charmod.x + pos.x,     charmod.y + pos.y - h, ch.uv.x,     ch.uv.y,
+                        charmod.x + pos.x,     charmod.y + pos.y,     ch.uv.x,     ch.uv_max.y,
+                        charmod.x + pos.x + w, charmod.y + pos.y,     ch.uv_max.x, ch.uv_max.y,
+                        charmod.x + pos.x,     charmod.y + pos.y - h, ch.uv.x,     ch.uv.y,
+                        charmod.x + pos.x + w, charmod.y + pos.y,     ch.uv_max.x, ch.uv_max.y,
+                        charmod.x + pos.x + w, charmod.y + pos.y - h, ch.uv_max.x, ch.uv.y,
                     };
                     text_quad.write(quad_size * i, &vertices);
-                    vk.cmdDraw(cb, 6, 1, @intCast(i * 6), char);
-                    pos.x += @as(f32, @floatFromInt(ch.advance >> 6)) * scale;
+                    vk.cmdDraw(cb, 6, 1, @intCast(i * 6), 0);
+                    pos.x += ch.advance * scale;
                 }
             }
 
