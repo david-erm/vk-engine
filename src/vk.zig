@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log.scoped(.vkloader);
 pub fn makeApiVersion(variant: u32, major: u32, minor: u32, patch: u32) u32 {
     return variant << 29 | major << 22 | minor << 12 | patch;
 }
@@ -23,6 +24,7 @@ pub fn load(proc: pfn.vkGetInstanceProcAddr) void {
 }
 pub fn loadInstance(instance: Instance) void {
     inline for (@typeInfo(table.instance).@"struct".decls) |field| {
+        log.debug("loading: {s}", .{field.name});
         @field(table.instance, field.name) = @ptrCast(table.instance.vkGetInstanceProcAddr(instance, field.name.ptr));
         table.device.vkGetDeviceProcAddr = @ptrCast(table.instance.vkGetInstanceProcAddr(instance, "vkGetDeviceProcAddr"));
     }
@@ -318,6 +320,11 @@ pub const StructureType = enum(i32) {
     acquire_next_image_infoKHR = 1000060010,
     device_group_present_infoKHR = 1000060011,
     device_group_swapchain_create_infoKHR = 1000060012,
+    debug_utils_object_name_infoEXT = 1000128000,
+    debug_utils_object_tag_infoEXT = 1000128001,
+    debug_utils_labelEXT = 1000128002,
+    debug_utils_messenger_callback_dataEXT = 1000128003,
+    debug_utils_messenger_create_infoEXT = 1000128004,
 };
 pub const ObjectType = enum(i32) {
     unknown = 0,
@@ -351,6 +358,7 @@ pub const ObjectType = enum(i32) {
     private_data_slot = 1000295000,
     surfaceKHR = 1000000000,
     swapchainKHR = 1000001000,
+    debug_utils_messengerEXT = 1000128000,
 };
 pub const VendorId = enum(i32) {
     khronos = 65536,
@@ -1507,6 +1515,24 @@ pub const DeviceGroupPresentModeFlagsKHR = packed struct(u32) {
     local_multi_device: bool = false,
     _padding0: u28 = 0,
 };
+pub const DebugUtilsMessengerCallbackDataFlagsEXT = u32; //unused flag type
+pub const DebugUtilsMessageTypeFlagsEXT = packed struct(u32) {
+    general: bool = false,
+    validation: bool = false,
+    performance: bool = false,
+    _padding0: u29 = 0,
+};
+pub const DebugUtilsMessageSeverityFlagsEXT = packed struct(u32) {
+    verbose: bool = false,
+    _padding0: u3 = 0,
+    info: bool = false,
+    _padding1: u3 = 0,
+    warning: bool = false,
+    _padding2: u3 = 0,
+    @"error": bool = false,
+    _padding3: u19 = 0,
+};
+pub const DebugUtilsMessengerCreateFlagsEXT = u32; //unused flag type
 const Instance_t = opaque {};
 pub const Instance = *Instance_t;
 const PhysicalDevice_t = opaque {};
@@ -1567,6 +1593,8 @@ const SurfaceKHR_t = opaque {};
 pub const SurfaceKHR = *SurfaceKHR_t;
 const SwapchainKHR_t = opaque {};
 pub const SwapchainKHR = *SwapchainKHR_t;
+const DebugUtilsMessengerEXT_t = opaque {};
+pub const DebugUtilsMessengerEXT = *DebugUtilsMessengerEXT_t;
 pub const MaxPhysicalDeviceNameSize = 256;
 pub const UuidSize = 16;
 pub const LuidSize = 8;
@@ -1605,6 +1633,33 @@ pub const ComputeOccupancyPriorityLowNV = 0.25;
 pub const ComputeOccupancyPriorityNormalNV = 0.5;
 pub const ComputeOccupancyPriorityHighNV = 0.75;
 pub const MaxDataGraphTosaNameSizeARM = 128;
+pub const DebugUtilsLabelEXT = extern struct {
+    sType: StructureType = .debug_utils_labelEXT,
+    pNext: ?*const anyopaque = null,
+    pLabelName: [*:0]const u8 = undefined,
+    color: [4]f32 = @splat(0),
+};
+pub const DebugUtilsObjectNameInfoEXT = extern struct {
+    sType: StructureType = .debug_utils_object_name_infoEXT,
+    pNext: ?*const anyopaque = null,
+    objectType: ObjectType = .unknown,
+    objectHandle: u64 = 0,
+    pObjectName: ?[*:0]const u8 = null,
+};
+pub const DebugUtilsMessengerCallbackDataEXT = extern struct {
+    sType: StructureType = .debug_utils_messenger_callback_dataEXT,
+    pNext: ?*const anyopaque = null,
+    flags: DebugUtilsMessengerCallbackDataFlagsEXT = std.mem.zeroes(DebugUtilsMessengerCallbackDataFlagsEXT),
+    pMessageIdName: ?[*:0]const u8 = null,
+    messageIdNumber: i32 = 0,
+    pMessage: ?[*:0]const u8 = null,
+    queueLabelCount: u32 = 0,
+    pQueueLabels: [*]const DebugUtilsLabelEXT = undefined,
+    cmdBufLabelCount: u32 = 0,
+    pCmdBufLabels: [*]const DebugUtilsLabelEXT = undefined,
+    objectCount: u32 = 0,
+    pObjects: [*]const DebugUtilsObjectNameInfoEXT = undefined,
+};
 pub const Extent2D = extern struct {
     width: u32 = 0,
     height: u32 = 0,
@@ -2568,9 +2623,9 @@ pub const ClearAttachment = extern struct {
 };
 pub const ImageBlit = extern struct {
     srcSubresource: ImageSubresourceLayers = .{},
-    srcOffsets: [2]Offset3D = .{},
+    srcOffsets: [2]Offset3D = @splat(.{}),
     dstSubresource: ImageSubresourceLayers = .{},
-    dstOffsets: [2]Offset3D = .{},
+    dstOffsets: [2]Offset3D = @splat(.{}),
 };
 pub const ImageResolve = extern struct {
     srcSubresource: ImageSubresourceLayers = .{},
@@ -3905,9 +3960,9 @@ pub const ImageBlit2 = extern struct {
     sType: StructureType = .image_blit_2,
     pNext: ?*const anyopaque = null,
     srcSubresource: ImageSubresourceLayers = .{},
-    srcOffsets: [2]Offset3D = .{},
+    srcOffsets: [2]Offset3D = @splat(.{}),
     dstSubresource: ImageSubresourceLayers = .{},
-    dstOffsets: [2]Offset3D = .{},
+    dstOffsets: [2]Offset3D = @splat(.{}),
 };
 pub const BlitImageInfo2 = extern struct {
     sType: StructureType = .blit_image_info_2,
@@ -4071,6 +4126,24 @@ pub const DeviceGroupSwapchainCreateInfoKHR = extern struct {
     sType: StructureType = .device_group_swapchain_create_infoKHR,
     pNext: ?*const anyopaque = null,
     modes: DeviceGroupPresentModeFlagsKHR = .{},
+};
+pub const DebugUtilsMessengerCreateInfoEXT = extern struct {
+    sType: StructureType = .debug_utils_messenger_create_infoEXT,
+    pNext: ?*const anyopaque = null,
+    flags: DebugUtilsMessengerCreateFlagsEXT = std.mem.zeroes(DebugUtilsMessengerCreateFlagsEXT),
+    messageSeverity: DebugUtilsMessageSeverityFlagsEXT = .{},
+    messageType: DebugUtilsMessageTypeFlagsEXT = .{},
+    pfnUserCallback: *pfn.DebugUtilsMessengerCallbackEXT = undefined,
+    pUserData: ?*anyopaque = null,
+};
+pub const DebugUtilsObjectTagInfoEXT = extern struct {
+    sType: StructureType = .debug_utils_object_tag_infoEXT,
+    pNext: ?*const anyopaque = null,
+    objectType: ObjectType = .unknown,
+    objectHandle: u64 = 0,
+    tagName: u64 = 0,
+    tagSize: u64 = std.mem.zeroes(u64),
+    pTag: [*]const u8 = undefined,
 };
 pub fn createInstance(pCreateInfo: *const InstanceCreateInfo, pAllocator: ?*const AllocationCallbacks, pInstance: *Instance) ResultErr!void {
     return makeError(ResultErr, table.global.vkCreateInstance(pCreateInfo, pAllocator, pInstance));
@@ -4759,6 +4832,39 @@ pub fn getPhysicalDevicePresentRectanglesKHR(physicalDevice: PhysicalDevice, sur
 pub fn acquireNextImage2KHR(device: Device, pAcquireInfo: *const AcquireNextImageInfoKHR, pImageIndex: *u32) ResultErr!void {
     return makeError(ResultErr, table.device.vkAcquireNextImage2KHR(device, pAcquireInfo, pImageIndex));
 }
+pub fn setDebugUtilsObjectNameEXT(device: Device, pNameInfo: *const DebugUtilsObjectNameInfoEXT) ResultErr!void {
+    return makeError(ResultErr, table.device.vkSetDebugUtilsObjectNameEXT(device, pNameInfo));
+}
+pub fn setDebugUtilsObjectTagEXT(device: Device, pTagInfo: *const DebugUtilsObjectTagInfoEXT) ResultErr!void {
+    return makeError(ResultErr, table.device.vkSetDebugUtilsObjectTagEXT(device, pTagInfo));
+}
+pub fn queueBeginDebugUtilsLabelEXT(queue: Queue, pLabelInfo: *const DebugUtilsLabelEXT) void {
+    return table.device.vkQueueBeginDebugUtilsLabelEXT(queue, pLabelInfo);
+}
+pub fn queueEndDebugUtilsLabelEXT(queue: Queue) void {
+    return table.device.vkQueueEndDebugUtilsLabelEXT(queue);
+}
+pub fn queueInsertDebugUtilsLabelEXT(queue: Queue, pLabelInfo: *const DebugUtilsLabelEXT) void {
+    return table.device.vkQueueInsertDebugUtilsLabelEXT(queue, pLabelInfo);
+}
+pub fn cmdBeginDebugUtilsLabelEXT(commandBuffer: CommandBuffer, pLabelInfo: *const DebugUtilsLabelEXT) void {
+    return table.device.vkCmdBeginDebugUtilsLabelEXT(commandBuffer, pLabelInfo);
+}
+pub fn cmdEndDebugUtilsLabelEXT(commandBuffer: CommandBuffer) void {
+    return table.device.vkCmdEndDebugUtilsLabelEXT(commandBuffer);
+}
+pub fn cmdInsertDebugUtilsLabelEXT(commandBuffer: CommandBuffer, pLabelInfo: *const DebugUtilsLabelEXT) void {
+    return table.device.vkCmdInsertDebugUtilsLabelEXT(commandBuffer, pLabelInfo);
+}
+pub fn createDebugUtilsMessengerEXT(instance: Instance, pCreateInfo: *const DebugUtilsMessengerCreateInfoEXT, pAllocator: ?*const AllocationCallbacks, pMessenger: *DebugUtilsMessengerEXT) ResultErr!void {
+    return makeError(ResultErr, table.instance.vkCreateDebugUtilsMessengerEXT(instance, pCreateInfo, pAllocator, pMessenger));
+}
+pub fn destroyDebugUtilsMessengerEXT(instance: Instance, messenger: ?DebugUtilsMessengerEXT, pAllocator: ?*const AllocationCallbacks) void {
+    return table.instance.vkDestroyDebugUtilsMessengerEXT(instance, messenger, pAllocator);
+}
+pub fn submitDebugUtilsMessageEXT(instance: Instance, messageSeverity: DebugUtilsMessageSeverityFlagsEXT, messageTypes: DebugUtilsMessageTypeFlagsEXT, pCallbackData: *const DebugUtilsMessengerCallbackDataEXT) void {
+    return table.instance.vkSubmitDebugUtilsMessageEXT(instance, messageSeverity, messageTypes, pCallbackData);
+}
 
 pub const table = struct {
     pub const global = struct {
@@ -4799,6 +4905,9 @@ pub const table = struct {
         pub var vkGetPhysicalDeviceSurfaceFormatsKHR: pfn.vkGetPhysicalDeviceSurfaceFormatsKHR = undefined;
         pub var vkGetPhysicalDeviceSurfacePresentModesKHR: pfn.vkGetPhysicalDeviceSurfacePresentModesKHR = undefined;
         pub var vkGetPhysicalDevicePresentRectanglesKHR: pfn.vkGetPhysicalDevicePresentRectanglesKHR = undefined;
+        pub var vkCreateDebugUtilsMessengerEXT: pfn.vkCreateDebugUtilsMessengerEXT = undefined;
+        pub var vkDestroyDebugUtilsMessengerEXT: pfn.vkDestroyDebugUtilsMessengerEXT = undefined;
+        pub var vkSubmitDebugUtilsMessageEXT: pfn.vkSubmitDebugUtilsMessageEXT = undefined;
     };
     pub const device = struct {
         pub var vkGetDeviceProcAddr: pfn.vkGetDeviceProcAddr = undefined;
@@ -4995,6 +5104,14 @@ pub const table = struct {
         pub var vkGetDeviceGroupPresentCapabilitiesKHR: pfn.vkGetDeviceGroupPresentCapabilitiesKHR = undefined;
         pub var vkGetDeviceGroupSurfacePresentModesKHR: pfn.vkGetDeviceGroupSurfacePresentModesKHR = undefined;
         pub var vkAcquireNextImage2KHR: pfn.vkAcquireNextImage2KHR = undefined;
+        pub var vkSetDebugUtilsObjectNameEXT: pfn.vkSetDebugUtilsObjectNameEXT = undefined;
+        pub var vkSetDebugUtilsObjectTagEXT: pfn.vkSetDebugUtilsObjectTagEXT = undefined;
+        pub var vkQueueBeginDebugUtilsLabelEXT: pfn.vkQueueBeginDebugUtilsLabelEXT = undefined;
+        pub var vkQueueEndDebugUtilsLabelEXT: pfn.vkQueueEndDebugUtilsLabelEXT = undefined;
+        pub var vkQueueInsertDebugUtilsLabelEXT: pfn.vkQueueInsertDebugUtilsLabelEXT = undefined;
+        pub var vkCmdBeginDebugUtilsLabelEXT: pfn.vkCmdBeginDebugUtilsLabelEXT = undefined;
+        pub var vkCmdEndDebugUtilsLabelEXT: pfn.vkCmdEndDebugUtilsLabelEXT = undefined;
+        pub var vkCmdInsertDebugUtilsLabelEXT: pfn.vkCmdInsertDebugUtilsLabelEXT = undefined;
     };
 };
 pub const pfn = struct {
@@ -5004,6 +5121,7 @@ pub const pfn = struct {
     pub const InternalFreeNotification = ?*const fn (pUserData: ?*anyopaque, size: u64, allocationType: InternalAllocationType, allocationScope: SystemAllocationScope) callconv(.c) void;
     pub const ReallocationFunction = ?*const fn (pUserData: ?*anyopaque, pOriginal: ?*anyopaque, size: u64, alignment: u64, allocationScope: SystemAllocationScope) callconv(.c) ?*anyopaque;
     pub const VoidFunction = ?*const fn () callconv(.c) void;
+    pub const DebugUtilsMessengerCallbackEXT = ?*const fn (messageSeverity: DebugUtilsMessageSeverityFlagsEXT, messageTypes: DebugUtilsMessageTypeFlagsEXT, pCallbackData: *DebugUtilsMessengerCallbackDataEXT, pUserData: ?*anyopaque) callconv(.c) Bool;
     pub const GetInstanceProcAddrLUNARG = ?*const fn (instance: Instance, pName: [*:0]const u8) callconv(.c) pfn.VoidFunction;
     pub const vkCreateInstance = *const fn (pCreateInfo: *const InstanceCreateInfo, pAllocator: ?*const AllocationCallbacks, pInstance: *Instance) callconv(.c) Result;
     pub const vkDestroyInstance = *const fn (instance: ?Instance, pAllocator: ?*const AllocationCallbacks) callconv(.c) void;
@@ -5234,4 +5352,15 @@ pub const pfn = struct {
     pub const vkGetDeviceGroupSurfacePresentModesKHR = *const fn (device: Device, surface: SurfaceKHR, pModes: ?*DeviceGroupPresentModeFlagsKHR) callconv(.c) Result;
     pub const vkGetPhysicalDevicePresentRectanglesKHR = *const fn (physicalDevice: PhysicalDevice, surface: SurfaceKHR, pRectCount: ?*u32, pRects: ?[*]Rect2D) callconv(.c) Result;
     pub const vkAcquireNextImage2KHR = *const fn (device: Device, pAcquireInfo: *const AcquireNextImageInfoKHR, pImageIndex: *u32) callconv(.c) Result;
+    pub const vkSetDebugUtilsObjectNameEXT = *const fn (device: Device, pNameInfo: *const DebugUtilsObjectNameInfoEXT) callconv(.c) Result;
+    pub const vkSetDebugUtilsObjectTagEXT = *const fn (device: Device, pTagInfo: *const DebugUtilsObjectTagInfoEXT) callconv(.c) Result;
+    pub const vkQueueBeginDebugUtilsLabelEXT = *const fn (queue: Queue, pLabelInfo: *const DebugUtilsLabelEXT) callconv(.c) void;
+    pub const vkQueueEndDebugUtilsLabelEXT = *const fn (queue: Queue) callconv(.c) void;
+    pub const vkQueueInsertDebugUtilsLabelEXT = *const fn (queue: Queue, pLabelInfo: *const DebugUtilsLabelEXT) callconv(.c) void;
+    pub const vkCmdBeginDebugUtilsLabelEXT = *const fn (commandBuffer: CommandBuffer, pLabelInfo: *const DebugUtilsLabelEXT) callconv(.c) void;
+    pub const vkCmdEndDebugUtilsLabelEXT = *const fn (commandBuffer: CommandBuffer) callconv(.c) void;
+    pub const vkCmdInsertDebugUtilsLabelEXT = *const fn (commandBuffer: CommandBuffer, pLabelInfo: *const DebugUtilsLabelEXT) callconv(.c) void;
+    pub const vkCreateDebugUtilsMessengerEXT = *const fn (instance: Instance, pCreateInfo: *const DebugUtilsMessengerCreateInfoEXT, pAllocator: ?*const AllocationCallbacks, pMessenger: *DebugUtilsMessengerEXT) callconv(.c) Result;
+    pub const vkDestroyDebugUtilsMessengerEXT = *const fn (instance: Instance, messenger: ?DebugUtilsMessengerEXT, pAllocator: ?*const AllocationCallbacks) callconv(.c) void;
+    pub const vkSubmitDebugUtilsMessageEXT = *const fn (instance: Instance, messageSeverity: DebugUtilsMessageSeverityFlagsEXT, messageTypes: DebugUtilsMessageTypeFlagsEXT, pCallbackData: *const DebugUtilsMessengerCallbackDataEXT) callconv(.c) void;
 };

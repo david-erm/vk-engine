@@ -190,18 +190,21 @@ pub const Context = struct {
         vk.load(instanceProcAddr);
 
         {
-            const instance_extensions = try sdl.vulkan.getInstanceExtensions();
-            for (instance_extensions) |extension| {
-                log.debug("instance extension: {s}", .{extension});
-            }
+            const platform_extensions = try sdl.vulkan.getInstanceExtensions();
+            var extensions: std.ArrayList([*:0]const u8) = .empty;
+            defer extensions.deinit(arena);
+
+            try extensions.appendSlice(arena, platform_extensions);
+            try extensions.append(arena, "VK_EXT_debug_utils");
+
             const app_info: vk.ApplicationInfo = .{
                 .pApplicationName = "howtovulkna",
                 .apiVersion = vk.makeApiVersion(0, 1, 3, 0),
             };
             try vk.createInstance(&.{
                 .pApplicationInfo = &app_info,
-                .enabledExtensionCount = @intCast(instance_extensions.len),
-                .ppEnabledExtensionNames = instance_extensions.ptr,
+                .enabledExtensionCount = @intCast(extensions.items.len),
+                .ppEnabledExtensionNames = extensions.items.ptr,
             }, null, &ctx.instance);
             vk.loadInstance(ctx.instance);
         }

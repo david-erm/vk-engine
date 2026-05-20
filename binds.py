@@ -10,9 +10,10 @@ enabled = [
     "VK_VERSION_1_3",
     "VK_KHR_swapchain",
     "VK_KHR_surface",
+    "VK_EXT_debug_utils",
 ]
 
-keywords = ['and', 'or', 'inline', 'opaque']
+keywords = ['and', 'or', 'inline', 'opaque', 'error']
 
 out = ""
 # namespaces
@@ -325,8 +326,12 @@ def get_default(type):
         for field in vk.enums[type.type].fields:
             if field.value == 0:
                 ret += f" = .{vals[field.name]}"
+
     elif type.type in vk.flags and vk.flags[type.type].bitmaskName or type.type in vk.structs:
-        ret += " = .{}"
+        if type.fixedSizeArray:
+            ret += " = @splat(.{})"
+        else:
+            ret += " = .{}"
     elif "int" in type.type or "float" in type.type or "char" in type.type:
         if type.length or type.fixedSizeArray:
             ret += " = @splat(0)"
@@ -367,11 +372,13 @@ def zig_struct(st):
     if not check_enabled(st):
         return
 
-    out += "pub const " + st.name[2:] + " = extern "
+    ret = ""
+
+    ret += "pub const " + st.name[2:] + " = extern "
     if st.union:
-        out += "union {\n"
+        ret += "union {\n"
     else:
-        out += "struct {\n"
+        ret += "struct {\n"
 
     types[st.name] = st.name[2:]
 
@@ -379,8 +386,11 @@ def zig_struct(st):
         types[alias] = st.name[2:]
 
     for member in st.members:
-        out += handle_member(member, st)
-    out += "};\n"
+        ret += handle_member(member, st)
+
+    ret += "};\n"
+
+    out += ret
 
 
 def zig_const(const):
