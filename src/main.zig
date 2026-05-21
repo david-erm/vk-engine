@@ -1,6 +1,6 @@
 const std = @import("std");
-const Io = std.Io;
 const log = std.log.scoped(.howtovulkan);
+const Io = std.Io;
 
 const vk = @import("vk");
 const shaders = @import("shaders");
@@ -51,41 +51,47 @@ var mouse_state: sdl.MouseButtonFlags = .{};
 var space_advance: f32 = undefined;
 
 pub fn main(init: std.process.Init) !void {
-    const arena = init.arena.allocator();
+    const a_static = init.arena.allocator();
+    var arena_startup = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const a_startup = arena_startup.allocator();
+    var arena_frame = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const a_frame = arena_frame.allocator();
     var io = init.io;
 
-    var ctx: zkf.Context = try .init(arena);
+    var ctx: zkf.Context = try .init(a_startup);
     defer ctx.deinit();
-    var rctx: zkf.RenderContext = try .init(&ctx, arena, 1920, 1080, "testing", max_frames);
+    var rctx: zkf.RenderContext = try .init(&ctx, a_static, a_startup, 1920, 1080, "testing", max_frames);
     defer rctx.deinit(ctx);
 
+    _ = sdl.setWindowRelativeMouseMode(rctx.window, true);
+
     //mem
-    var mem_props: vk.PhysicalDeviceMemoryProperties2 = .{};
-    vk.getPhysicalDeviceMemoryProperties2(ctx.pdevice, &mem_props);
-    var m3: vk.PhysicalDeviceMaintenance3Properties = .{};
-    var idk: vk.PhysicalDeviceProperties2 = .{ .pNext = &m3 };
-    vk.getPhysicalDeviceProperties2(ctx.pdevice, &idk);
+    {
+        var mem_props: vk.PhysicalDeviceMemoryProperties2 = .{};
+        vk.getPhysicalDeviceMemoryProperties2(ctx.pdevice, &mem_props);
+        var m3: vk.PhysicalDeviceMaintenance3Properties = .{};
+        var idk: vk.PhysicalDeviceProperties2 = .{ .pNext = &m3 };
+        vk.getPhysicalDeviceProperties2(ctx.pdevice, &idk);
 
-    const memtype_idx: u32 = for (0..mem_props.memoryProperties.memoryTypeCount) |i| {
-        const flags = mem_props.memoryProperties.memoryTypes[i].propertyFlags;
-        if (flags.device_local and flags.host_visible and flags.host_coherent) break @intCast(i);
-    } else return error.NoSuitableMemory;
+        const memtype_idx: u32 = for (0..mem_props.memoryProperties.memoryTypeCount) |i| {
+            const flags = mem_props.memoryProperties.memoryTypes[i].propertyFlags;
+            if (flags.device_local and flags.host_visible and flags.host_coherent) break @intCast(i);
+        } else return error.NoSuitableMemory;
 
-    const mem_smth: vk.MemoryAllocateFlagsInfo = .{ .flags = .{ .device_address = true } };
-    const mem_ci: vk.MemoryAllocateInfo = .{ .allocationSize = 0x200000, .memoryTypeIndex = memtype_idx, .pNext = &mem_smth };
-    var mem: vk.DeviceMemory = undefined;
-    try vk.allocateMemory(ctx.device, &mem_ci, null, &mem);
-    defer vk.freeMemory(ctx.device, mem, null);
+        const mem_smth: vk.MemoryAllocateFlagsInfo = .{ .flags = .{ .device_address = true } };
+        const mem_ci: vk.MemoryAllocateInfo = .{ .allocationSize = 0x200000, .memoryTypeIndex = memtype_idx, .pNext = &mem_smth };
+        var mem: vk.DeviceMemory = undefined;
+        try vk.allocateMemory(ctx.device, &mem_ci, null, &mem);
+        defer vk.freeMemory(ctx.device, mem, null);
 
-    var pointer: [*]align(4096) u8 = undefined;
-    try vk.mapMemory(ctx.device, mem, 0, 4096, .{}, @ptrCast(&pointer));
-    defer vk.unmapMemory(ctx.device, mem);
-    log.info("{*}, {*}", .{ pointer, pointer + 1 });
+        var pointer: [*]align(4096) u8 = undefined;
+        try vk.mapMemory(ctx.device, mem, 0, 4096, .{}, @ptrCast(&pointer));
+        defer vk.unmapMemory(ctx.device, mem);
+    }
     //end mem
 
-    _ = sdl.setWindowRelativeMouseMode(rctx.window, true);
-    const suzanne = try zkf.loadObj(arena, &io, "assets/suzanne.obj");
-    const cube = try zkf.loadObj(arena, &io, "assets/cube.obj");
+    const suzanne = try zkf.loadObj(a_static, &io, "assets/suzanne.obj");
+    const cube = try zkf.loadObj(a_static, &io, "assets/cube.obj");
 
     const vBufferSize: vk.DeviceSize = @sizeOf(Vertex) * suzanne.vertices.items.len;
     const iBufferSize: vk.DeviceSize = @sizeOf(u32) * suzanne.indices.items.len;
@@ -129,8 +135,7 @@ pub fn main(init: std.process.Init) !void {
 
     //textures
     var texture_descriptors: [5]vk.DescriptorImageInfo = undefined;
-
-    const skybox = try zkf.loadImage(arena, "assets/skybox.ktx2", ctx.device, ctx.vka, ctx.queue, commandPool);
+    const skybox = try zkf.loadImage(a_static, "assets/skybox.ktx2", ctx.device, ctx.vka, ctx.queue, commandPool);
     defer vma.destroyImage(ctx.vka, skybox.image, skybox.alon);
     defer vk.destroyImageView(ctx.device, skybox.view, null);
     defer vk.destroySampler(ctx.device, skybox.sampler, null);
@@ -148,7 +153,7 @@ pub fn main(init: std.process.Init) !void {
         var buf: [128]u8 = @splat(0);
         const filename = try std.fmt.bufPrintSentinel(&buf, "assets/suzanne{}.ktx", .{i}, 0);
 
-        texture.* = try zkf.loadImage(arena, filename, ctx.device, ctx.vka, ctx.queue, commandPool);
+        texture.* = try zkf.loadImage(a_static, filename, ctx.device, ctx.vka, ctx.queue, commandPool);
 
         texture_descriptors[i] = .{
             .sampler = texture.sampler,
@@ -179,7 +184,7 @@ pub fn main(init: std.process.Init) !void {
         .format = .r8_unorm,
         .extent = .{ .width = atlas_size, .height = atlas_size, .depth = 1 },
         .samples = .{ .@"1" = true },
-        .usage = .{ .transfer_dst = true, .sampled = true, .storage = true },
+        .usage = .{ .transfer_dst = true, .sampled = true },
         .mipLevels = 1,
         .arrayLayers = 1,
     };
@@ -321,27 +326,7 @@ pub fn main(init: std.process.Init) !void {
             atlas_offsetx += glyph.bitmap.width + 2;
             const ratio = (out.uv_max.x - out.uv.x) / (out.uv_max.y - out.uv.y);
             out.scale = .{ .x = ratio * yscale, .y = yscale };
-            try charmap.put(arena, @intCast(i), out);
-
-            // const texread_barrier: vk.ImageMemoryBarrier2 = .{
-            //     .srcStageMask = .{ .all_transfer = true },
-            //     .srcAccessMask = .{ .transfer_write = true },
-            //     .dstStageMask = .{ .all_transfer = true },
-            //     .dstAccessMask = .{ .transfer_write = true },
-            //     .oldLayout = .transfer_dst_optimal,
-            //     .newLayout = .transfer_dst_optimal,
-            //     .image = atlas,
-            //     .subresourceRange = .{
-            //         .aspectMask = .{ .color = true },
-            //         .levelCount = 1,
-            //         .layerCount = 1,
-            //     },
-            // };
-            // const barrier_texinfo: vk.DependencyInfo = .{
-            //     .imageMemoryBarrierCount = 1,
-            //     .pImageMemoryBarriers = @ptrCast(&texread_barrier),
-            // };
-            // vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
+            try charmap.put(a_static, @intCast(i), out);
 
             if (transfer_offset == 5) {
                 try vk.endCommandBuffer(cmd_buf);
@@ -738,7 +723,10 @@ pub fn main(init: std.process.Init) !void {
     const frametime_goal = 8333;
     var diff_acc: f32 = 0;
 
+    arena_startup.deinit();
     while (!quit) {
+        _ = arena_frame.reset(.retain_capacity);
+
         const wait_info: vk.SemaphoreWaitInfo = .{ .semaphoreCount = 1, .pSemaphores = @ptrCast(&rctx.loop_tml), .pValues = &.{signal_val[fif_index]} };
         try vk.waitSemaphores(ctx.device, &wait_info, std.math.maxInt(u64));
         frame += 1;
@@ -918,9 +906,7 @@ pub fn main(init: std.process.Init) !void {
 
                 vk.cmdBindPipeline(cb, .graphics, text_pipeline);
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&text_quad.handle), &.{0});
-                const text = try std.fmt.allocPrint(arena, "frametimeg,: {d:.3}ms±😊", .{elasped / 1000});
-                // const text = "testing";
-                defer arena.free(text);
+                const text = try std.fmt.allocPrint(a_frame, "frametimeg,: {d:.3}ms±😊", .{elasped / 1000});
 
                 var pos: Vec2 = .{ .x = mouse_pos.x, .y = mouse_pos.y };
                 const scale: f32 = 1;
@@ -1042,6 +1028,7 @@ pub fn main(init: std.process.Init) !void {
             vk.updateDescriptorSets(ctx.device, 1, @ptrCast(&writes[0]), 0, undefined);
         }
     }
+    arena_frame.deinit();
 
     try vk.deviceWaitIdle(ctx.device);
     const fframe: f32 = @floatFromInt(frame);

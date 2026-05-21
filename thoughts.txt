@@ -1,26 +1,27 @@
 # WORK: 
-integrate bindgen to build system. extensions decided at build time.
-switch textures from stinky raw to BC7
-generate slang structs from zig structs
-debugutils extension
+- integrate bindgen to build system. extensions decided at build time.
+    - maybe i need to allow pfn to be null? if i simply remove the extension funtions stuff will not compile.
+- switch textures from stinky raw to BC7 // 0.150 second startup, 360M vram
+- generate slang structs from zig structs
+- debugutils extension intergration // wrappers that autogive names? comptimefn?
 
 # CHALLENGE:
-fix the text rendering, make it actually good (Vertex pulling, only 1 quad for char? or 1 unit quad and 2 scale floats?)
-add a post process pass # now do it with a offscreen image
-vertex pulling over
-    surely can check for performance differences
-finish allocator
+- fix the text rendering, make it actually good (Vertex pulling, only 1 quad for char? or 1 unit quad and 2 scale floats?)
+- add a post process pass # now do it with a offscreen image
+- vertex pulling over
+    - surely can check for performance differences
+- finish allocator
 
 # GOAL:
-start making abstractions
-lets do aimtrainer (hopefully builds into somee wildwest type shi)
+- start making abstractions
+- lets do aimtrainer (hopefully builds into somee wildwest type shi)
 
 # IDEA:
-separate type definitions into its own module so that generated files can consume them?
-doing collisions via simpler meshes
-vertex pulling for some reason?
-# maybe can cope with only freetype? 
-freetype harfbuzz for real font renderind at some point
+- separate type definitions into its own module so that generated files can consume them?
+- doing collisions via simpler meshes
+- vertex pulling for some reason?
+- freetype harfbuzz for real font renderind at some point // maybe can cope with only freetype? 
+
 
 
 

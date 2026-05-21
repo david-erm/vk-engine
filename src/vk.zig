@@ -24,7 +24,6 @@ pub fn load(proc: pfn.vkGetInstanceProcAddr) void {
 }
 pub fn loadInstance(instance: Instance) void {
     inline for (@typeInfo(table.instance).@"struct".decls) |field| {
-        log.debug("loading: {s}", .{field.name});
         @field(table.instance, field.name) = @ptrCast(table.instance.vkGetInstanceProcAddr(instance, field.name.ptr));
         table.device.vkGetDeviceProcAddr = @ptrCast(table.instance.vkGetInstanceProcAddr(instance, "vkGetDeviceProcAddr"));
     }

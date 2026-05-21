@@ -35,6 +35,8 @@ pub const Vec4 = extern struct {
     }
 };
 pub const Vec2 = extern struct { x: f32 = 0, y: f32 = 0 };
+pub const IVec2 = extern struct { x: i32 = 0, y: i32 = 0 };
+pub const UVec2 = extern struct { x: u32 = 0, y: u32 = 0 };
 pub const Vertex = extern struct { pos: Vec3, norm: Vec3, uv: Vec2 };
 pub const Mat4 = extern struct {
     data: [4][4]f32,
@@ -192,7 +194,6 @@ pub const Context = struct {
         {
             const platform_extensions = try sdl.vulkan.getInstanceExtensions();
             var extensions: std.ArrayList([*:0]const u8) = .empty;
-            defer extensions.deinit(arena);
 
             try extensions.appendSlice(arena, platform_extensions);
             try extensions.append(arena, "VK_EXT_debug_utils");
@@ -335,7 +336,15 @@ pub const RenderContext = struct {
         defer vk.destroyImageView(ctx.device, rctx.depth.view, null);
     }
 
-    pub fn init(ctx: *const Context, arena: std.mem.Allocator, width: u32, height: u32, name: [:0]const u8, frames_in_flight: usize) !RenderContext {
+    pub fn init(
+        ctx: *const Context,
+        static: std.mem.Allocator,
+        startup: std.mem.Allocator,
+        width: u32,
+        height: u32,
+        name: [:0]const u8,
+        frames_in_flight: usize,
+    ) !RenderContext {
         var rctx: RenderContext = undefined;
         rctx.windowsize.width = width;
         rctx.windowsize.height = height;
@@ -351,8 +360,7 @@ pub const RenderContext = struct {
         rctx.sc_format = try fmt: {
             var format_count: u32 = 0;
             try vk.getPhysicalDeviceSurfaceFormatsKHR(ctx.pdevice, rctx.surface, &format_count, null);
-            const formats = try arena.alloc(vk.SurfaceFormatKHR, format_count);
-            defer arena.free(formats);
+            const formats = try startup.alloc(vk.SurfaceFormatKHR, format_count);
             try vk.getPhysicalDeviceSurfaceFormatsKHR(ctx.pdevice, rctx.surface, &format_count, formats.ptr);
             for (formats) |format| {
                 var props: vk.FormatProperties2 = .{};
@@ -388,10 +396,10 @@ pub const RenderContext = struct {
         {
             var image_count: u32 = 0;
             try vk.getSwapchainImagesKHR(ctx.device, rctx.swapchain, &image_count, null);
-            rctx.sc_imgs = try arena.alloc(vk.Image, image_count);
+            rctx.sc_imgs = try static.alloc(vk.Image, image_count);
             try vk.getSwapchainImagesKHR(ctx.device, rctx.swapchain, &image_count, rctx.sc_imgs.ptr);
 
-            rctx.sc_img_views = try arena.alloc(vk.ImageView, rctx.sc_imgs.len);
+            rctx.sc_img_views = try static.alloc(vk.ImageView, rctx.sc_imgs.len);
             for (0..rctx.sc_imgs.len) |i| {
                 const image_viewCI: vk.ImageViewCreateInfo = .{
                     .image = rctx.sc_imgs[i],
@@ -405,15 +413,15 @@ pub const RenderContext = struct {
                 };
                 try vk.createImageView(ctx.device, &image_viewCI, null, &rctx.sc_img_views[i]);
             }
-            rctx.sc_view_dsc = try arena.alloc(vk.DescriptorImageInfo, rctx.sc_img_views.len);
+            rctx.sc_view_dsc = try static.alloc(vk.DescriptorImageInfo, rctx.sc_img_views.len);
             for (rctx.sc_view_dsc, 0..) |*desc, i| {
                 desc.imageView = rctx.sc_img_views[i];
                 desc.imageLayout = .general;
             }
         }
 
-        rctx.fif_semaphore = try arena.alloc(vk.Semaphore, frames_in_flight);
-        rctx.swapchain_semaphore = try arena.alloc(vk.Semaphore, rctx.sc_imgs.len);
+        rctx.fif_semaphore = try static.alloc(vk.Semaphore, frames_in_flight);
+        rctx.swapchain_semaphore = try static.alloc(vk.Semaphore, rctx.sc_imgs.len);
         {
             const semaphoreCI: vk.SemaphoreCreateInfo = .{};
             for (rctx.fif_semaphore) |*semaphore| {
@@ -550,6 +558,73 @@ pub const Buffer = struct {
 
     pub fn address(buff: Buffer, device: vk.Device) vk.DeviceAddress {
         return vk.getBufferDeviceAddress(device, &.{ .buffer = buff.handle });
+    }
+};
+
+pub const Assets = struct {
+    pub const ID = enum(u64) { _ };
+
+    layout: vk.DescriptorSetLayout,
+    pool: vk.DescriptorPool,
+    set: vk.DescriptorSet,
+
+    semaphore: vk.Semaphore,
+
+    pub fn deinit(assets: Assets, ctx: Context) void {
+        vk.destroyDescriptorPool(ctx.device, assets.pool, null);
+        vk.destroyDescriptorSetLayout(ctx.device, assets.layout, null);
+    }
+
+    pub fn init(ctx: Context) !Assets {
+        var out: Assets = undefined;
+
+        const flags: [2]vk.DescriptorBindingFlags = .{
+            .{ .partially_bound = true, .update_unused_while_pending = false },
+            .{ .partially_bound = true, .update_unused_while_pending = false },
+        };
+        const bind_flags: vk.DescriptorSetLayoutBindingFlagsCreateInfo = .{ .pBindingFlags = &flags, .bindingCount = 2 };
+        const bindings = [_]vk.DescriptorSetLayoutBinding{
+            .{
+                .binding = 0,
+                .descriptorCount = 1000,
+                .descriptorType = .combined_image_sampler,
+                .stageFlags = .{ .fragment = true, .compute = true },
+            },
+            .{
+                .binding = 1,
+                .descriptorCount = 100,
+                .descriptorType = .storage_image,
+                .stageFlags = .{ .compute = true },
+            },
+        };
+        const layout_ci: vk.DescriptorSetLayoutCreateInfo = .{
+            .pNext = &bind_flags,
+            .pBindings = &bindings,
+            .bindingCount = 2,
+        };
+        try vk.createDescriptorSetLayout(ctx.device, &layout_ci, null, &out.layout);
+
+        const sizes: []const vk.DescriptorPoolSize = &.{
+            .{ .descriptorCount = 1000, .type = .combined_image_sampler },
+            .{ .descriptorCount = 100, .type = .storage_image },
+        };
+        const pool_ci: vk.DescriptorPoolCreateInfo = .{
+            .maxSets = 2,
+            .poolSizeCount = @intCast(sizes.len),
+            .pPoolSizes = sizes.ptr,
+        };
+        try vk.createDescriptorPool(ctx.device, &pool_ci, null, &out.pool);
+
+        var desc_set: vk.DescriptorSet = undefined;
+
+        const set_ai: vk.DescriptorSetAllocateInfo = .{
+            .descriptorPool = out.pool,
+            .descriptorSetCount = 1,
+            .pSetLayouts = @ptrCast(&out.layout),
+        };
+        try vk.allocateDescriptorSets(ctx.device, &set_ai, @ptrCast(&desc_set));
+
+        return out;
     }
 };
 
@@ -770,6 +845,13 @@ pub fn loadImage(a: std.mem.Allocator, filename: [:0]const u8, device: vk.Device
     return info;
 }
 
+const FileDataCtx = struct {
+    io: *std.Io,
+    arena: std.mem.Allocator,
+    mmaps: std.ArrayList(std.Io.File.MemoryMap),
+    count: usize = 0,
+};
+
 pub fn loadObj(arena: std.mem.Allocator, io: *std.Io, path: [*:0]const u8) !LoadedMesh {
     var attrib: c.tinyobj_attrib_t = undefined;
     var shapes_num: usize = 0;
@@ -777,7 +859,18 @@ pub fn loadObj(arena: std.mem.Allocator, io: *std.Io, path: [*:0]const u8) !Load
     //not doing shi with these
     var materials_num: usize = 0;
     var materials: ?[*]c.tinyobj_material_t = null;
-    const ret = c.tinyobj_parse_obj(&attrib, &shapes, &shapes_num, &materials, &materials_num, path, get_file_data, io, c.TINYOBJ_FLAG_TRIANGULATE);
+
+    var ctx: FileDataCtx = .{
+        .io = io,
+        .arena = arena,
+        .mmaps = .empty,
+    };
+
+    const ret = c.tinyobj_parse_obj(&attrib, &shapes, &shapes_num, &materials, &materials_num, path, get_file_data, &ctx, c.TINYOBJ_FLAG_TRIANGULATE);
+    for (ctx.mmaps.items) |*mmap| {
+        mmap.destroy(io.*);
+    }
+    ctx.mmaps.deinit(ctx.arena);
     if (ret != 0) @panic("loading obj failed");
 
     var vertices: std.ArrayList(Vertex) = .empty;
@@ -799,6 +892,8 @@ pub fn loadObj(arena: std.mem.Allocator, io: *std.Io, path: [*:0]const u8) !Load
     c.tinyobj_materials_free(materials, materials_num);
     c.tinyobj_shapes_free(shapes, shapes_num);
 
+    log.debug("count: {}", .{ctx.count});
+
     return .{ .indices = indices, .vertices = vertices };
 }
 
@@ -809,8 +904,9 @@ fn get_file_data(ioparam: ?*anyopaque, filename: [*c]const u8, _: i32, _: ?[*]co
         len.?.* = 0;
         return;
     }
-    const ioreal: *std.Io = @ptrCast(@alignCast(ioparam));
-    const io = ioreal.*;
+    var ctx: *FileDataCtx = @ptrCast(@alignCast(ioparam));
+    const io = ctx.io.*;
+    ctx.count += 1;
 
     const cwd = std.Io.Dir.cwd();
     const sfilename = std.mem.span(filename);
@@ -821,8 +917,7 @@ fn get_file_data(ioparam: ?*anyopaque, filename: [*c]const u8, _: i32, _: ?[*]co
 
     const stat = file.stat(io) catch @panic("failed to stat file");
     const mmap = file.createMemoryMap(io, .{ .len = stat.size, .protection = .{ .read = true } }) catch @panic("failed to mmap file");
-    // defer mmap.destroy(io);
-    // TODO: need to make this not just leave the mmpa open
+    ctx.mmaps.append(ctx.arena, mmap) catch @panic("fuck");
 
     buf.?.* = mmap.memory.ptr;
     len.?.* = mmap.memory.len;
