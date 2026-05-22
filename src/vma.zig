@@ -136,9 +136,28 @@ pub const AllocatorCreateInfo = extern struct {
     pTypeExternalMemoryHandleTypes: [*c]const vk.ExternalMemoryHandleTypeFlags = null,
 };
 
-pub const createAllocator = @extern(*const fn (*const AllocatorCreateInfo, *Allocator) callconv(.c) vk.Result, .{ .name = "vmaCreateAllocator" });
-pub const destroyAllocator = @extern(*const fn (Allocator) callconv(.c) void, .{ .name = "vmaDestroyAllocator" });
-pub const createImage = @extern(*const fn (allocator: Allocator, imageCreateInfo: *const vk.ImageCreateInfo, *const AllocationCreateInfo, image: *vk.Image, allocation: *Allocation, allocationInfo: ?*AllocationInfo) callconv(.c) vk.Result, .{ .name = "vmaCreateImage" });
-pub const destroyImage = @extern(*const fn (allocator: Allocator, img: vk.Image, allocation: Allocation) callconv(.c) void, .{ .name = "vmaDestroyImage" });
-pub const createBuffer = @extern(*const fn (allocator: Allocator, buffer_create_info: *const vk.BufferCreateInfo, *const AllocationCreateInfo, buffer: *vk.Buffer, allocation: *Allocation, allocationInfo: ?*AllocationInfo) callconv(.c) vk.Result, .{ .name = "vmaCreateBuffer" });
-pub const destroyBuffer = @extern(*const fn (allocator: Allocator, buffer: vk.Buffer, allocation: Allocation) callconv(.c) void, .{ .name = "vmaDestroyBuffer" });
+pub const raw_createAllocator = @extern(*const fn (*const AllocatorCreateInfo, *Allocator) callconv(.c) vk.Result, .{ .name = "vmaCreateAllocator" });
+pub const raw_destroyAllocator = @extern(*const fn (Allocator) callconv(.c) void, .{ .name = "vmaDestroyAllocator" });
+pub const raw_createImage = @extern(*const fn (allocator: Allocator, imageCreateInfo: *const vk.ImageCreateInfo, *const AllocationCreateInfo, image: *vk.Image, allocation: *Allocation, allocationInfo: ?*AllocationInfo) callconv(.c) vk.Result, .{ .name = "vmaCreateImage" });
+pub const raw_destroyImage = @extern(*const fn (allocator: Allocator, img: vk.Image, allocation: Allocation) callconv(.c) void, .{ .name = "vmaDestroyImage" });
+pub const raw_createBuffer = @extern(*const fn (allocator: Allocator, buffer_create_info: *const vk.BufferCreateInfo, *const AllocationCreateInfo, buffer: *vk.Buffer, allocation: *Allocation, allocationInfo: ?*AllocationInfo) callconv(.c) vk.Result, .{ .name = "vmaCreateBuffer" });
+pub const raw_destroyBuffer = @extern(*const fn (allocator: Allocator, buffer: vk.Buffer, allocation: Allocation) callconv(.c) void, .{ .name = "vmaDestroyBuffer" });
+
+pub fn createAllocator(ai: *const AllocatorCreateInfo, allocator: *Allocator) !void {
+    return vk.makeError(vk.ResultErr, raw_createAllocator(ai, allocator));
+}
+pub fn destroyAllocator(allocator: Allocator) void {
+    raw_destroyAllocator(allocator);
+}
+pub fn createImage(allocator: Allocator, imageCreateInfo: *const vk.ImageCreateInfo, ai: *const AllocationCreateInfo, image: *vk.Image, allocation: *Allocation, allocationInfo: ?*AllocationInfo) !void {
+    return vk.makeError(vk.ResultErr, raw_createImage(allocator, imageCreateInfo, ai, image, allocation, allocationInfo));
+}
+pub fn destroyImage(allocator: Allocator, img: vk.Image, allocation: Allocation) void {
+    raw_destroyImage(allocator, img, allocation);
+}
+pub fn createBuffer(allocator: Allocator, buffer_create_info: *const vk.BufferCreateInfo, ai: *const AllocationCreateInfo, buffer: *vk.Buffer, allocation: *Allocation, allocationInfo: ?*AllocationInfo) !void {
+    return vk.makeError(vk.ResultErr, raw_createBuffer(allocator, buffer_create_info, ai, buffer, allocation, allocationInfo));
+}
+pub fn destroyBuffer(allocator: Allocator, buffer: vk.Buffer, allocation: Allocation) void {
+    raw_destroyBuffer(allocator, buffer, allocation);
+}

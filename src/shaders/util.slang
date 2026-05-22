@@ -8,6 +8,13 @@ public struct Pose {
     public float4 rot;
 };
 
+public struct Scene {
+    public float4x4 projection;
+    public float4x4 ortho;
+    public Pose cam; 
+    public float delta_time;
+};
+
 public struct ShaderData {
     public float4x4 projection;
     public float4x4 ortho;
@@ -17,14 +24,9 @@ public struct ShaderData {
     public uint32_t selected;
 };
 
-public struct Glyph {
-    public float2 uv;
-    public float2 uv_max;
-};
-
-public struct PushData {
-    public ShaderData* data;    
-    public Glyph[] glyphs; 
+public struct Push {
+    public Scene* scene; 
+    public Pose* poses;
 };
 
 //Quat operations

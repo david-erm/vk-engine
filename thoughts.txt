@@ -11,6 +11,7 @@
 - vertex pulling over
     - surely can check for performance differences
 - finish allocator
+- upload queue for asset thingy
 
 # GOAL:
 - start making abstractions

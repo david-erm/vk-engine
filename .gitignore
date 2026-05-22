@@ -1,6 +1,7 @@
 debug.cap
 binding_notes.txt
 zig-out
+zig-pkg
 .zig-cache
 assets
 tinyobj_loader_c.h

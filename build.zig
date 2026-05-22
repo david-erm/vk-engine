@@ -12,6 +12,8 @@ pub fn build(b: *std.Build) !void {
     log.info("VulkanSDK at: {s}", .{vulkan_sdk});
     const vulkan_include = b.fmt("{s}/include", .{vulkan_sdk});
 
+    const zgltf = b.dependency("zgltf", .{});
+
     const c = b.addTranslateC(.{
         .root_source_file = b.addWriteFiles().add("c.h",
             \\#include "tinyobj_loader_c.h"
@@ -68,6 +70,7 @@ pub fn build(b: *std.Build) !void {
                 .{ .name = "c", .module = cMod },
                 .{ .name = "vk", .module = vk },
                 .{ .name = "shaders", .module = shaders },
+                .{ .name = "zgltf", .module = zgltf.module("zgltf") },
             },
         }),
     });

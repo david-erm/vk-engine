@@ -12,6 +12,7 @@ enabled = [
     "VK_KHR_surface",
     "VK_EXT_debug_utils",
 ]
+handle_switch = ""
 
 keywords = ['and', 'or', 'inline', 'opaque', 'error']
 
@@ -251,6 +252,7 @@ def zig_pfn(pfn):
 
 def zig_handle(handle):
     global out
+    global handle_switch
     if handle.name in types:
         return
     if not check_enabled(handle):
@@ -262,6 +264,8 @@ def zig_handle(handle):
         types[alias] = newname
     out += f"const {newname}_t = opaque{{}};\n"
     out  += f"pub const {newname} = *{newname}_t;\n"
+
+    handle_switch += f"\t\t{newname} => .{pascal_to_snake(newname)},\n"
 
 
 def parse_type(type):
@@ -527,6 +531,19 @@ print('    inline for (@typeInfo(table.device).@"struct".decls) |field| {')
 print('        @field(table.device, field.name) = @ptrCast(table.device.vkGetDeviceProcAddr(device, field.name.ptr));')
 print('    }')
 print('}')
+if "VK_EXT_debug_utils" in enabled:
+    print('pub fn nameHandle(device: Device, handle: anytype, name: [*:0]const u8) !void {')
+    print('    const handle_type: ObjectType = switch (@TypeOf(handle)) {')
+    print(handle_switch)
+    print('        else => @compileError("Not a VK Handle"),')
+    print('    };')
+    print('    const ci: DebugUtilsObjectNameInfoEXT = .{')
+    print('        .objectHandle = @intFromPtr(handle),')
+    print('        .pObjectName = name,')
+    print('        .objectType = handle_type,')
+    print('    };')
+    print('    try setDebugUtilsObjectNameEXT(device, &ci);')
+    print('}')
 print(out)
 print(f'pub const {table_ns} = struct {{')
 print(f'\tpub const {global_ns} = struct {{{glob}\t}};')

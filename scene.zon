@@ -1,0 +1,11 @@
+.{
+    .entities = .{
+        .{
+            .model_idx = 0,
+            .position = .{ .x = 1, .y = 1, .z = 1 },
+        },
+    },
+    .models = .{
+        "assets/helm/DamagedHelmet.gltf",
+    },
+}

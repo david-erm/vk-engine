@@ -19,7 +19,6 @@ pub fn makeError(comptime err: type, ret: anytype) err!void {
 }
 
 //math
-
 pub const Vec4 = extern struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -88,6 +87,7 @@ pub const Mat4 = extern struct {
         return ret;
     }
 };
+
 pub const Vec3 = extern struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -199,8 +199,11 @@ pub const Context = struct {
             try extensions.append(arena, "VK_EXT_debug_utils");
 
             const app_info: vk.ApplicationInfo = .{
-                .pApplicationName = "howtovulkna",
                 .apiVersion = vk.makeApiVersion(0, 1, 3, 0),
+                .pApplicationName = "howtovulkna",
+                .applicationVersion = vk.makeApiVersion(0, 1, 0, 0),
+                .pEngineName = "zkf",
+                .engineVersion = vk.makeApiVersion(0, 1, 0, 0),
             };
             try vk.createInstance(&.{
                 .pApplicationInfo = &app_info,
@@ -217,10 +220,13 @@ pub const Context = struct {
             try vk.enumeratePhysicalDevices(ctx.instance, &device_count, devices.ptr);
             const device_index: u32 = 0;
             ctx.pdevice = devices[device_index];
+
             for (devices) |d| {
                 var dp: vk.PhysicalDeviceProperties2 = .{};
                 vk.getPhysicalDeviceProperties2(d, &dp);
                 log.info("dev: {s}", .{dp.properties.deviceName});
+                var features: vk.PhysicalDeviceFeatures2 = .{};
+                vk.getPhysicalDeviceFeatures2(d, &features);
             }
 
             var device_properties: vk.PhysicalDeviceProperties2 = .{};
@@ -282,7 +288,7 @@ pub const Context = struct {
                 .vkGetDeviceProcAddr = vk.table.device.vkGetDeviceProcAddr,
                 .vkCreateImage = vk.table.device.vkCreateImage,
             };
-            _ = vma.createAllocator(&.{
+            try vma.createAllocator(&.{
                 .flags = .{ .BufferDeviceAddressBit = 1 },
                 .physicalDevice = ctx.pdevice,
                 .device = ctx.device,
@@ -339,7 +345,7 @@ pub const RenderContext = struct {
     pub fn init(
         ctx: *const Context,
         static: std.mem.Allocator,
-        startup: std.mem.Allocator,
+        // startup: std.mem.Allocator,
         width: u32,
         height: u32,
         name: [:0]const u8,
@@ -357,21 +363,20 @@ pub const RenderContext = struct {
         });
         rctx.surface = try sdl.vulkan.createSurface(rctx.window, ctx.instance, null);
 
-        rctx.sc_format = try fmt: {
-            var format_count: u32 = 0;
-            try vk.getPhysicalDeviceSurfaceFormatsKHR(ctx.pdevice, rctx.surface, &format_count, null);
-            const formats = try startup.alloc(vk.SurfaceFormatKHR, format_count);
-            try vk.getPhysicalDeviceSurfaceFormatsKHR(ctx.pdevice, rctx.surface, &format_count, formats.ptr);
-            for (formats) |format| {
-                var props: vk.FormatProperties2 = .{};
-                vk.getPhysicalDeviceFormatProperties2(ctx.pdevice, format.format, &props);
-                log.info("format: {}", .{format.format});
-                if (props.formatProperties.optimalTilingFeatures.storage_image) {
-                    break :fmt format.format;
-                }
-            }
-            break :fmt error.FormatNotFound;
-        };
+        // rctx.sc_format = try fmt: {
+        //     var format_count: u32 = 0;
+        //     try vk.getPhysicalDeviceSurfaceFormatsKHR(ctx.pdevice, rctx.surface, &format_count, null);
+        //     const formats = try startup.alloc(vk.SurfaceFormatKHR, format_count);
+        //     try vk.getPhysicalDeviceSurfaceFormatsKHR(ctx.pdevice, rctx.surface, &format_count, formats.ptr);
+        //     for (formats) |format| {
+        //         var props: vk.FormatProperties2 = .{};
+        //         vk.getPhysicalDeviceFormatProperties2(ctx.pdevice, format.format, &props);
+        //         if (props.formatProperties.optimalTilingFeatures.storage_image) {
+        //             break :fmt format.format;
+        //         }
+        //     }
+        //     break :fmt error.FormatNotFound;
+        // };
         rctx.sc_format = .b8g8r8a8_unorm;
 
         {
@@ -459,7 +464,7 @@ pub const RenderContext = struct {
         };
 
         const alloc_ci: vma.AllocationCreateInfo = .{ .usage = .auto };
-        _ = vma.createImage(ctx.vka, &rctx.depth_ci, &alloc_ci, &rctx.depth.handle, &rctx.depth.allocation, null);
+        try vma.createImage(ctx.vka, &rctx.depth_ci, &alloc_ci, &rctx.depth.handle, &rctx.depth.allocation, null);
 
         const depthImageViewCI: vk.ImageViewCreateInfo = .{
             .format = rctx.depth.format,
@@ -518,7 +523,7 @@ pub const RenderContext = struct {
 
         rctx.depth_ci.extent = .{ .width = rctx.windowsize.width, .height = rctx.windowsize.height, .depth = 1 };
         const aci: vma.AllocationCreateInfo = .{ .usage = .auto, .flags = .{ .dedicated_memory_bit = true } };
-        _ = vma.createImage(ctx.vka, &rctx.depth_ci, &aci, &rctx.depth.handle, &rctx.depth.allocation, null);
+        try vma.createImage(ctx.vka, &rctx.depth_ci, &aci, &rctx.depth.handle, &rctx.depth.allocation, null);
         const viewCI: vk.ImageViewCreateInfo = .{
             .image = rctx.depth.handle,
             .viewType = .@"2d",
@@ -527,6 +532,167 @@ pub const RenderContext = struct {
         };
         try vk.createImageView(ctx.device, &viewCI, null, &rctx.depth.view);
     }
+};
+
+pub const AssetManager = struct {
+    textures_map: std.StringHashMapUnmanaged(usize),
+    textures: std.ArrayList(Texture),
+    descriptor_set: vk.DescriptorSet,
+    descriptor_layout: vk.DescriptorSetLayout,
+    image_descriptors: std.ArrayList(vk.DescriptorImageInfo),
+
+    upload_semahore: vk.Semaphore,
+    upload_val: u64,
+
+    pub fn init(ctx: Context) AssetManager {
+        var out: AssetManager = undefined;
+        const semaphore_type: vk.SemaphoreTypeCreateInfo = .{ .semaphoreType = .timeline };
+        const semaphore_ci: vk.SemaphoreCreateInfo = .{ .pNext = &semaphore_type };
+        vk.createSemaphore(ctx.device, &semaphore_ci, null, &out.upload_semaphore);
+    }
+
+    pub fn loadTexture(ctx: Context, a: std.mem.Allocator, cp: vk.CommandPool, filename: [:0]const u8) !Texture {
+        log.debug("attempting to open: {s}", .{filename});
+        var texture: *ktx.Texture = try .fromNamedFile(filename.ptr, .{ .load_image_data_bit = true });
+        defer texture.destroy();
+
+        var info: Texture = undefined;
+        const format = texture.getVkFormat();
+
+        var image_ci: vk.ImageCreateInfo = .{
+            .arrayLayers = texture.numLayers,
+            .imageType = @enumFromInt(texture.numDimensions - 1),
+            .format = format,
+            .extent = .{ .width = texture.baseWidth, .height = texture.baseHeight, .depth = texture.baseDepth },
+            .mipLevels = texture.numLevels,
+            .samples = .{ .@"1" = true },
+            .tiling = .optimal,
+            .usage = .{ .transfer_dst = true, .sampled = true },
+            .initialLayout = .undefined,
+        };
+
+        if (texture.isCubemap) {
+            image_ci.arrayLayers = texture.numFaces;
+            image_ci.flags.cube_compatible = true;
+        }
+
+        const alloc_ci: vma.AllocationCreateInfo = .{ .usage = .auto };
+        try vma.createImage(ctx.vka, &image_ci, &alloc_ci, &info.image, &info.alon, null);
+        errdefer vma.destroyImage(ctx.vka, info.image, info.alon);
+
+        const img_buffer = Buffer.init(ctx.vka, .{ .size = texture.dataSize, .usage = .{ .transfer_src = true } }, .mapped_vram);
+        defer img_buffer.deinit(ctx.vka);
+        img_buffer.write(0, texture.pData[0..texture.dataSize]);
+
+        const fence_ci: vk.FenceCreateInfo = .{};
+        var fence: vk.Fence = undefined;
+        try vk.createFence(ctx.device, &fence_ci, null, &fence);
+        defer vk.destroyFence(ctx.device, fence, null);
+
+        var cmd_buf: vk.CommandBuffer = undefined;
+        const cmd_buf_ai: vk.CommandBufferAllocateInfo = .{ .commandPool = cp, .commandBufferCount = 1, .level = .primary };
+        try vk.allocateCommandBuffers(ctx.device, &cmd_buf_ai, @ptrCast(&cmd_buf));
+        defer vk.freeCommandBuffers(ctx.device, cp, 1, @ptrCast(&cmd_buf));
+
+        const cmd_binfo: vk.CommandBufferBeginInfo = .{ .flags = .{ .one_time_submit = true } };
+        try vk.beginCommandBuffer(cmd_buf, &cmd_binfo);
+
+        const mem_barrier: vk.ImageMemoryBarrier2 = .{
+            .dstStageMask = .{ .all_transfer = true },
+            .dstAccessMask = .{ .transfer_write = true },
+            .oldLayout = .undefined,
+            .newLayout = .transfer_dst_optimal,
+            .image = info.image,
+            .subresourceRange = .{
+                .aspectMask = .{ .color = true },
+                .levelCount = image_ci.mipLevels,
+                .layerCount = image_ci.arrayLayers,
+            },
+        };
+        var barrier_texinfo: vk.DependencyInfo = .{
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = @ptrCast(&mem_barrier),
+        };
+        vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
+
+        const copy_regions = try a.alloc(vk.BufferImageCopy, image_ci.mipLevels * image_ci.arrayLayers);
+        defer a.free(copy_regions);
+        for (0..image_ci.arrayLayers) |i| {
+            const layer: u32 = @intCast(i);
+            for (0..image_ci.mipLevels) |j| {
+                const level: u32 = @intCast(j);
+                copy_regions[i * image_ci.mipLevels + j] = vk.BufferImageCopy{
+                    .bufferOffset = try texture.getImageOffset(level, 0, layer),
+                    .imageSubresource = .{
+                        .aspectMask = .{ .color = true },
+                        .mipLevel = level,
+                        .baseArrayLayer = layer,
+                        .layerCount = 1,
+                    },
+                    .imageExtent = .{
+                        .width = texture.baseWidth >> @intCast(j),
+                        .height = texture.baseHeight >> @intCast(j),
+                        .depth = texture.baseDepth,
+                    },
+                };
+            }
+        }
+        vk.cmdCopyBufferToImage(cmd_buf, img_buffer.handle, info.image, .transfer_dst_optimal, @intCast(copy_regions.len), copy_regions.ptr);
+
+        const texread_barrier: vk.ImageMemoryBarrier2 = .{
+            .srcStageMask = .{ .all_transfer = true },
+            .srcAccessMask = .{ .transfer_write = true },
+            .dstStageMask = .{ .fragment_shader = true },
+            .dstAccessMask = .{ .shader_read = true },
+            .oldLayout = .transfer_dst_optimal,
+            .newLayout = .read_only_optimal,
+            .image = info.image,
+            .subresourceRange = .{
+                .aspectMask = .{ .color = true },
+                .levelCount = image_ci.mipLevels,
+                .layerCount = image_ci.arrayLayers,
+            },
+        };
+        barrier_texinfo.pImageMemoryBarriers = @ptrCast(&texread_barrier);
+        vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
+
+        try vk.endCommandBuffer(cmd_buf);
+        const sub_info: vk.SubmitInfo = .{
+            .commandBufferCount = 1,
+            .pCommandBuffers = @ptrCast(&cmd_buf),
+        };
+        try vk.queueSubmit(ctx.queue, 1, @ptrCast(&sub_info), fence);
+
+        const sampler_ci: vk.SamplerCreateInfo = .{
+            .magFilter = .linear,
+            .minFilter = .linear,
+            .mipmapMode = .linear,
+            .anisotropyEnable = .True,
+            .maxAnisotropy = 8.0,
+            .borderColor = .float_transparent_black,
+            .maxLod = @floatFromInt(image_ci.mipLevels),
+        };
+        try vk.createSampler(ctx.device, &sampler_ci, null, &info.sampler);
+
+        var view_ci: vk.ImageViewCreateInfo = .{
+            .format = format,
+            .image = info.image,
+            .subresourceRange = .{
+                .layerCount = image_ci.arrayLayers,
+                .levelCount = image_ci.mipLevels,
+                .aspectMask = .{ .color = true },
+            },
+        };
+        if (texture.isCubemap) {
+            view_ci.viewType = .cube;
+        } else view_ci.viewType = .@"2d";
+        try vk.createImageView(ctx.device, &view_ci, null, &info.view);
+        try vk.waitForFences(ctx.device, 1, @ptrCast(&fence), .True, std.math.maxInt(u64));
+
+        return info;
+    }
+
+    pub fn loadLevel() void {}
 };
 
 pub const Buffer = struct {
@@ -538,9 +704,9 @@ pub const Buffer = struct {
         vma.destroyBuffer(vka, buff.handle, buff.alloc);
     }
 
-    pub fn init(vka: vma.Allocator, ci: vk.BufferCreateInfo, ai: vma.AllocationCreateInfo) Buffer {
+    pub fn init(vka: vma.Allocator, ci: vk.BufferCreateInfo, ai: vma.AllocationCreateInfo) !Buffer {
         var ret: Buffer = undefined;
-        _ = vma.createBuffer(vka, &ci, &ai, &ret.handle, &ret.alloc, &ret.alloci);
+        try vma.createBuffer(vka, &ci, &ai, &ret.handle, &ret.alloc, &ret.alloci);
         return ret;
     }
 
@@ -558,73 +724,6 @@ pub const Buffer = struct {
 
     pub fn address(buff: Buffer, device: vk.Device) vk.DeviceAddress {
         return vk.getBufferDeviceAddress(device, &.{ .buffer = buff.handle });
-    }
-};
-
-pub const Assets = struct {
-    pub const ID = enum(u64) { _ };
-
-    layout: vk.DescriptorSetLayout,
-    pool: vk.DescriptorPool,
-    set: vk.DescriptorSet,
-
-    semaphore: vk.Semaphore,
-
-    pub fn deinit(assets: Assets, ctx: Context) void {
-        vk.destroyDescriptorPool(ctx.device, assets.pool, null);
-        vk.destroyDescriptorSetLayout(ctx.device, assets.layout, null);
-    }
-
-    pub fn init(ctx: Context) !Assets {
-        var out: Assets = undefined;
-
-        const flags: [2]vk.DescriptorBindingFlags = .{
-            .{ .partially_bound = true, .update_unused_while_pending = false },
-            .{ .partially_bound = true, .update_unused_while_pending = false },
-        };
-        const bind_flags: vk.DescriptorSetLayoutBindingFlagsCreateInfo = .{ .pBindingFlags = &flags, .bindingCount = 2 };
-        const bindings = [_]vk.DescriptorSetLayoutBinding{
-            .{
-                .binding = 0,
-                .descriptorCount = 1000,
-                .descriptorType = .combined_image_sampler,
-                .stageFlags = .{ .fragment = true, .compute = true },
-            },
-            .{
-                .binding = 1,
-                .descriptorCount = 100,
-                .descriptorType = .storage_image,
-                .stageFlags = .{ .compute = true },
-            },
-        };
-        const layout_ci: vk.DescriptorSetLayoutCreateInfo = .{
-            .pNext = &bind_flags,
-            .pBindings = &bindings,
-            .bindingCount = 2,
-        };
-        try vk.createDescriptorSetLayout(ctx.device, &layout_ci, null, &out.layout);
-
-        const sizes: []const vk.DescriptorPoolSize = &.{
-            .{ .descriptorCount = 1000, .type = .combined_image_sampler },
-            .{ .descriptorCount = 100, .type = .storage_image },
-        };
-        const pool_ci: vk.DescriptorPoolCreateInfo = .{
-            .maxSets = 2,
-            .poolSizeCount = @intCast(sizes.len),
-            .pPoolSizes = sizes.ptr,
-        };
-        try vk.createDescriptorPool(ctx.device, &pool_ci, null, &out.pool);
-
-        var desc_set: vk.DescriptorSet = undefined;
-
-        const set_ai: vk.DescriptorSetAllocateInfo = .{
-            .descriptorPool = out.pool,
-            .descriptorSetCount = 1,
-            .pSetLayouts = @ptrCast(&out.layout),
-        };
-        try vk.allocateDescriptorSets(ctx.device, &set_ai, @ptrCast(&desc_set));
-
-        return out;
     }
 };
 
@@ -723,10 +822,10 @@ pub fn loadImage(a: std.mem.Allocator, filename: [:0]const u8, device: vk.Device
     }
 
     const alloc_ci: vma.AllocationCreateInfo = .{ .usage = .auto };
-    _ = vma.createImage(vka, &image_ci, &alloc_ci, &info.image, &info.alon, null);
+    try vma.createImage(vka, &image_ci, &alloc_ci, &info.image, &info.alon, null);
     errdefer vma.destroyImage(vka, info.image, info.alon);
 
-    const img_buffer = Buffer.init(
+    const img_buffer = try Buffer.init(
         vka,
         .{ .size = texture.dataSize, .usage = .{ .transfer_src = true } },
         .{ .usage = .auto, .flags = .{
@@ -891,8 +990,6 @@ pub fn loadObj(arena: std.mem.Allocator, io: *std.Io, path: [*:0]const u8) !Load
     c.tinyobj_attrib_free(&attrib);
     c.tinyobj_materials_free(materials, materials_num);
     c.tinyobj_shapes_free(shapes, shapes_num);
-
-    log.debug("count: {}", .{ctx.count});
 
     return .{ .indices = indices, .vertices = vertices };
 }

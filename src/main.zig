@@ -4,6 +4,7 @@ const Io = std.Io;
 
 const vk = @import("vk");
 const shaders = @import("shaders");
+const gltf = @import("zgltf").Gltf;
 
 const zkf = @import("zkf.zig");
 const sdl = @import("sdl.zig");
@@ -40,6 +41,17 @@ const Glyph = struct {
 };
 var charmap: std.AutoHashMapUnmanaged(u21, Glyph) = .empty;
 
+const Thingies = struct {
+    model_idx: usize,
+    position: Vec3,
+};
+
+const SceneZon = struct {
+    entities: []const Thingies,
+    models: []const []const u8,
+    // skybox: []const u8,
+};
+
 const max_frames = 2;
 var cam: Camera = .{ .pose = .{ .pos = .{ .z = 6.0 }, .rot = .identity, .extra = 0 } };
 var fullscreen = false;
@@ -58,49 +70,33 @@ pub fn main(init: std.process.Init) !void {
     const a_frame = arena_frame.allocator();
     var io = init.io;
 
+    const level_file = try Io.Dir.cwd().openFile(io, "scene.zon", .{});
+    defer level_file.close(io);
+    const stat = try level_file.stat(io);
+    const level_buffer = try a_startup.alloc(u8, stat.size + 1);
+    @memset(level_buffer, 0);
+    const size = try level_file.readPositionalAll(io, level_buffer, 0);
+    const level = try std.zon.parse.fromSliceAlloc(SceneZon, a_startup, level_buffer[0..size :0], null, .{});
+    _ = level;
+
     var ctx: zkf.Context = try .init(a_startup);
     defer ctx.deinit();
-    var rctx: zkf.RenderContext = try .init(&ctx, a_static, a_startup, 1920, 1080, "testing", max_frames);
+    var rctx: zkf.RenderContext = try .init(&ctx, a_static, 1920, 1080, "testing", max_frames);
     defer rctx.deinit(ctx);
 
     _ = sdl.setWindowRelativeMouseMode(rctx.window, true);
-
-    //mem
-    {
-        var mem_props: vk.PhysicalDeviceMemoryProperties2 = .{};
-        vk.getPhysicalDeviceMemoryProperties2(ctx.pdevice, &mem_props);
-        var m3: vk.PhysicalDeviceMaintenance3Properties = .{};
-        var idk: vk.PhysicalDeviceProperties2 = .{ .pNext = &m3 };
-        vk.getPhysicalDeviceProperties2(ctx.pdevice, &idk);
-
-        const memtype_idx: u32 = for (0..mem_props.memoryProperties.memoryTypeCount) |i| {
-            const flags = mem_props.memoryProperties.memoryTypes[i].propertyFlags;
-            if (flags.device_local and flags.host_visible and flags.host_coherent) break @intCast(i);
-        } else return error.NoSuitableMemory;
-
-        const mem_smth: vk.MemoryAllocateFlagsInfo = .{ .flags = .{ .device_address = true } };
-        const mem_ci: vk.MemoryAllocateInfo = .{ .allocationSize = 0x200000, .memoryTypeIndex = memtype_idx, .pNext = &mem_smth };
-        var mem: vk.DeviceMemory = undefined;
-        try vk.allocateMemory(ctx.device, &mem_ci, null, &mem);
-        defer vk.freeMemory(ctx.device, mem, null);
-
-        var pointer: [*]align(4096) u8 = undefined;
-        try vk.mapMemory(ctx.device, mem, 0, 4096, .{}, @ptrCast(&pointer));
-        defer vk.unmapMemory(ctx.device, mem);
-    }
-    //end mem
 
     const suzanne = try zkf.loadObj(a_static, &io, "assets/suzanne.obj");
     const cube = try zkf.loadObj(a_static, &io, "assets/cube.obj");
 
     const vBufferSize: vk.DeviceSize = @sizeOf(Vertex) * suzanne.vertices.items.len;
     const iBufferSize: vk.DeviceSize = @sizeOf(u32) * suzanne.indices.items.len;
-    const suzanne_buffer = zkf.Buffer.init(ctx.vka, .{ .size = vBufferSize + iBufferSize, .usage = .{ .index_buffer = true, .vertex_buffer = true } }, .mapped_vram);
+    const suzanne_buffer = try zkf.Buffer.init(ctx.vka, .{ .size = vBufferSize + iBufferSize, .usage = .{ .index_buffer = true, .vertex_buffer = true } }, .mapped_vram);
     defer suzanne_buffer.deinit(ctx.vka);
     suzanne_buffer.write(0, suzanne.vertices.items);
     suzanne_buffer.write(vBufferSize, suzanne.indices.items);
 
-    const plane_buffer = zkf.Buffer.init(ctx.vka, .{
+    const plane_buffer = try zkf.Buffer.init(ctx.vka, .{
         .size = @sizeOf(f32) * plane_vertices.len + @sizeOf(u32) * quad_indices.len,
         .usage = .{ .index_buffer = true, .vertex_buffer = true },
     }, .mapped_vram);
@@ -108,7 +104,7 @@ pub fn main(init: std.process.Init) !void {
     plane_buffer.write(0, plane_vertices);
     plane_buffer.write(@sizeOf(f32) * plane_vertices.len, quad_indices);
 
-    const cube_buffer = zkf.Buffer.init(ctx.vka, .{
+    const cube_buffer = try zkf.Buffer.init(ctx.vka, .{
         .size = @sizeOf(Vertex) * cube.vertices.items.len + @sizeOf(u32) * cube.indices.items.len,
         .usage = .{ .index_buffer = true, .vertex_buffer = true },
     }, .mapped_vram);
@@ -117,7 +113,7 @@ pub fn main(init: std.process.Init) !void {
     cube_buffer.write(@sizeOf(Vertex) * cube.vertices.items.len, cube.indices.items);
 
     const quad_size = @sizeOf(f32) * 6 * 4;
-    const text_quad = zkf.Buffer.init(ctx.vka, .{
+    const text_quad = try zkf.Buffer.init(ctx.vka, .{
         .size = quad_size * 100,
         .usage = .{ .vertex_buffer = true },
     }, .mapped_vram);
@@ -134,6 +130,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     //textures
+
     var texture_descriptors: [5]vk.DescriptorImageInfo = undefined;
     const skybox = try zkf.loadImage(a_static, "assets/skybox.ktx2", ctx.device, ctx.vka, ctx.queue, commandPool);
     defer vma.destroyImage(ctx.vka, skybox.image, skybox.alon);
@@ -151,7 +148,7 @@ pub fn main(init: std.process.Init) !void {
     };
     for ((&textures)[0..3], 0..) |*texture, i| {
         var buf: [128]u8 = @splat(0);
-        const filename = try std.fmt.bufPrintSentinel(&buf, "assets/suzanne{}.ktx", .{i}, 0);
+        const filename = try std.fmt.bufPrintSentinel(&buf, "assets/suzanne{}.ktx2", .{i}, 0);
 
         texture.* = try zkf.loadImage(a_static, filename, ctx.device, ctx.vka, ctx.queue, commandPool);
 
@@ -161,6 +158,29 @@ pub fn main(init: std.process.Init) !void {
             .imageLayout = .read_only_optimal,
         };
     }
+
+    const helm_path = "assets/helm";
+    const damaged_helmet_gltf = try Io.Dir.cwd().readFileAlloc(
+        io,
+        try std.fmt.allocPrint(a_startup, "{s}/{s}", .{ helm_path, "DamagedHelmet.gltf" }),
+        a_startup,
+        .unlimited,
+    );
+    var g = gltf.init(std.heap.page_allocator);
+    try g.parse(@alignCast(damaged_helmet_gltf));
+    g.debugPrint();
+
+    for (g.data.images) |img| {
+        const filename = try std.fmt.allocPrintSentinel(a_startup, "{s}/{s}", .{ helm_path, img.uri.? }, 0);
+        const bcn = try zkf.loadImage(a_static, filename, ctx.device, ctx.vka, ctx.queue, commandPool);
+        try vk.nameHandle(ctx.device, bcn.image, filename);
+
+        vk.destroySampler(ctx.device, bcn.sampler, null);
+        vk.destroyImageView(ctx.device, bcn.view, null);
+        vma.destroyImage(ctx.vka, bcn.image, bcn.alon);
+    }
+
+    g.deinit();
 
     //fonts
     var ft: c.FT_Library = undefined;
@@ -191,7 +211,9 @@ pub fn main(init: std.process.Init) !void {
     const atlas_ai: vma.AllocationCreateInfo = .{ .usage = .auto };
     var atlas: vk.Image = undefined;
     var atlas_alloc: vma.Allocation = undefined;
-    _ = vma.createImage(ctx.vka, &atlas_ci, &atlas_ai, &atlas, &atlas_alloc, null);
+    try vma.createImage(ctx.vka, &atlas_ci, &atlas_ai, &atlas, &atlas_alloc, null);
+    try vk.nameHandle(ctx.device, atlas, "Font Atlas");
+
     defer vma.destroyImage(ctx.vka, atlas, atlas_alloc);
 
     const atlas_view_ci: vk.ImageViewCreateInfo = .{
@@ -246,7 +268,7 @@ pub fn main(init: std.process.Init) !void {
     const transfer_buffer_size = 5;
     const transfer_ci: vk.BufferCreateInfo = .{ .size = glyph_size * transfer_buffer_size, .usage = .{ .transfer_src = true } };
     const transfer_ai: vma.AllocationCreateInfo = .{ .usage = .auto, .flags = .{ .mapped_bit = true, .host_access_sequential_write_bit = true } };
-    const transfer_buffer: zkf.Buffer = .init(ctx.vka, transfer_ci, transfer_ai);
+    const transfer_buffer: zkf.Buffer = try .init(ctx.vka, transfer_ci, transfer_ai);
     defer transfer_buffer.deinit(ctx.vka);
 
     var transfer_offset: u32 = 0;
@@ -700,7 +722,7 @@ pub fn main(init: std.process.Init) !void {
             .size = @sizeOf(ShaderData),
             .usage = .{ .shader_device_address = true },
         };
-        shader_buffers[i] = .init(ctx.vka, uBufferCI, .mapped_vram);
+        shader_buffers[i] = try .init(ctx.vka, uBufferCI, .mapped_vram);
     }
 
     //basic dt and quit
@@ -941,6 +963,7 @@ pub fn main(init: std.process.Init) !void {
             vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&desc_set), 0, undefined);
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 0, 8, @ptrCast(&mouse_pos));
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 8, 4, @ptrCast(&swapchain_index));
+            vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 12, 4, &.{ 0, 0, 0, 0 });
             const compute_barrier1: vk.ImageMemoryBarrier2 = .{
                 .srcStageMask = .{ .color_attachment_output = true },
                 .srcAccessMask = .{ .color_attachment_write = true },
