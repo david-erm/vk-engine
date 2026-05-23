@@ -534,29 +534,117 @@ pub const RenderContext = struct {
     }
 };
 
+pub fn ObjectPool(T: type) type {
+    return struct {
+        const Error = error{OutOfMemory};
+        const list_end = std.math.maxInt(u32);
+        pub const Element = union(enum) {
+            next: u32,
+            val: T,
+        };
+        head: u32,
+        pool: []Element,
+
+        pub fn init(gpa: std.mem.Allocator, size: usize) !@This() {
+            const pool: []Element = try gpa.alloc(Element, size);
+
+            for (pool[0 .. size - 1], 0..) |*elem, i| {
+                elem.* = .{ .next = @intCast(i + 1) };
+            }
+
+            pool[size - 1] = .{ .next = list_end };
+
+            return .{
+                .head = 0,
+                .pool = pool,
+            };
+        }
+
+        pub fn push(pool: *@This(), val: T) Error!void {
+            if (pool.head != list_end) {
+                const idx = pool.head;
+                pool.head = pool.pool[idx].next;
+                pool.pool[idx] = .{ .val = val };
+            } else {
+                return Error.OutOfMemory;
+            }
+        }
+
+        pub fn pop(pool: *@This(), idx: u32) void {
+            pool.pool[idx] = .{ .next = pool.head };
+            pool.head = idx;
+        }
+
+        pub fn deinit(object_pool: *@This(), gpa: std.mem.Allocator) void {
+            gpa.free(object_pool.pool);
+        }
+    };
+}
+
 pub const AssetManager = struct {
-    textures_map: std.StringHashMapUnmanaged(usize),
-    textures: std.ArrayList(Texture),
+    // images: ObjectPool(vk.Image),
+    images: std.ArrayList(vk.Image),
+    image_descriptors: std.ArrayList(vk.DescriptorImageInfo),
+    image_allocations: std.ArrayList(vma.Allocation),
+
     descriptor_set: vk.DescriptorSet,
     descriptor_layout: vk.DescriptorSetLayout,
-    image_descriptors: std.ArrayList(vk.DescriptorImageInfo),
+    descriptor_pool: vk.DescriptorPool,
 
-    upload_semahore: vk.Semaphore,
-    upload_val: u64,
+    upload_semaphore: vk.Semaphore,
+    upload_val: std.atomic.Value(u64),
 
-    pub fn init(ctx: Context) AssetManager {
+    limits: Limits,
+    pub const Limits = struct {
+        combined_image_sampler: u64 = 0,
+        storage_image: u64 = 0,
+    };
+    pub fn init(ctx: Context, gpa: std.mem.Allocator, limits: Limits) !AssetManager {
+        var total_images: u64 = 0;
+        inline for (@typeInfo(Limits).@"struct".fields) |field| {
+            total_images += @field(limits, field.name);
+        }
+
         var out: AssetManager = undefined;
+        out.images = try .initCapacity(gpa, total_images);
+        out.image_descriptors = try .initCapacity(gpa, total_images);
+        out.image_allocations = try .initCapacity(gpa, total_images);
+        out.upload_val = .init(0);
         const semaphore_type: vk.SemaphoreTypeCreateInfo = .{ .semaphoreType = .timeline };
         const semaphore_ci: vk.SemaphoreCreateInfo = .{ .pNext = &semaphore_type };
-        vk.createSemaphore(ctx.device, &semaphore_ci, null, &out.upload_semaphore);
+        try vk.createSemaphore(ctx.device, &semaphore_ci, null, &out.upload_semaphore);
+
+        return out;
     }
 
-    pub fn loadTexture(ctx: Context, a: std.mem.Allocator, cp: vk.CommandPool, filename: [:0]const u8) !Texture {
+    pub fn deinit(manager: *AssetManager, ctx: Context, gpa: std.mem.Allocator) void {
+        vk.destroySemaphore(ctx.device, manager.upload_semaphore, null);
+        for (manager.image_descriptors.items, manager.images.items, manager.image_allocations.items) |descriptor, image, alloc| {
+            vma.destroyImage(ctx.vka, image, alloc);
+            vk.destroySampler(ctx.device, descriptor.sampler, null);
+            vk.destroyImageView(ctx.device, descriptor.imageView, null);
+        }
+        manager.images.deinit(gpa);
+        manager.image_descriptors.deinit(gpa);
+        manager.image_allocations.deinit(gpa);
+    }
+
+    pub const ImageHandle = struct {
+        id: usize,
+    };
+
+    pub fn loadTexture(manager: *AssetManager, ctx: Context, gpa: std.mem.Allocator, cp: vk.CommandPool, filename: [:0]const u8) !ImageHandle {
         log.debug("attempting to open: {s}", .{filename});
+
+        const image = manager.images.addOneAssumeCapacity();
+        var descriptor = manager.image_descriptors.addOneAssumeCapacity();
+        descriptor.imageLayout = .read_only_optimal;
+        const allocation = manager.image_allocations.addOneAssumeCapacity();
+        const id: u64 = manager.images.items.len - 1;
+
         var texture: *ktx.Texture = try .fromNamedFile(filename.ptr, .{ .load_image_data_bit = true });
         defer texture.destroy();
 
-        var info: Texture = undefined;
         const format = texture.getVkFormat();
 
         var image_ci: vk.ImageCreateInfo = .{
@@ -577,17 +665,12 @@ pub const AssetManager = struct {
         }
 
         const alloc_ci: vma.AllocationCreateInfo = .{ .usage = .auto };
-        try vma.createImage(ctx.vka, &image_ci, &alloc_ci, &info.image, &info.alon, null);
-        errdefer vma.destroyImage(ctx.vka, info.image, info.alon);
+        try vma.createImage(ctx.vka, &image_ci, &alloc_ci, image, allocation, null);
+        errdefer vma.destroyImage(ctx.vka, image.*, allocation.*);
 
-        const img_buffer = Buffer.init(ctx.vka, .{ .size = texture.dataSize, .usage = .{ .transfer_src = true } }, .mapped_vram);
+        const img_buffer = try Buffer.init(ctx.vka, .{ .size = texture.dataSize, .usage = .{ .transfer_src = true } }, .mapped_vram);
         defer img_buffer.deinit(ctx.vka);
         img_buffer.write(0, texture.pData[0..texture.dataSize]);
-
-        const fence_ci: vk.FenceCreateInfo = .{};
-        var fence: vk.Fence = undefined;
-        try vk.createFence(ctx.device, &fence_ci, null, &fence);
-        defer vk.destroyFence(ctx.device, fence, null);
 
         var cmd_buf: vk.CommandBuffer = undefined;
         const cmd_buf_ai: vk.CommandBufferAllocateInfo = .{ .commandPool = cp, .commandBufferCount = 1, .level = .primary };
@@ -602,7 +685,7 @@ pub const AssetManager = struct {
             .dstAccessMask = .{ .transfer_write = true },
             .oldLayout = .undefined,
             .newLayout = .transfer_dst_optimal,
-            .image = info.image,
+            .image = image.*,
             .subresourceRange = .{
                 .aspectMask = .{ .color = true },
                 .levelCount = image_ci.mipLevels,
@@ -615,8 +698,8 @@ pub const AssetManager = struct {
         };
         vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
 
-        const copy_regions = try a.alloc(vk.BufferImageCopy, image_ci.mipLevels * image_ci.arrayLayers);
-        defer a.free(copy_regions);
+        const copy_regions = try gpa.alloc(vk.BufferImageCopy, image_ci.mipLevels * image_ci.arrayLayers);
+        defer gpa.free(copy_regions);
         for (0..image_ci.arrayLayers) |i| {
             const layer: u32 = @intCast(i);
             for (0..image_ci.mipLevels) |j| {
@@ -637,7 +720,7 @@ pub const AssetManager = struct {
                 };
             }
         }
-        vk.cmdCopyBufferToImage(cmd_buf, img_buffer.handle, info.image, .transfer_dst_optimal, @intCast(copy_regions.len), copy_regions.ptr);
+        vk.cmdCopyBufferToImage(cmd_buf, img_buffer.handle, image.*, .transfer_dst_optimal, @intCast(copy_regions.len), copy_regions.ptr);
 
         const texread_barrier: vk.ImageMemoryBarrier2 = .{
             .srcStageMask = .{ .all_transfer = true },
@@ -646,7 +729,7 @@ pub const AssetManager = struct {
             .dstAccessMask = .{ .shader_read = true },
             .oldLayout = .transfer_dst_optimal,
             .newLayout = .read_only_optimal,
-            .image = info.image,
+            .image = image.*,
             .subresourceRange = .{
                 .aspectMask = .{ .color = true },
                 .levelCount = image_ci.mipLevels,
@@ -655,13 +738,17 @@ pub const AssetManager = struct {
         };
         barrier_texinfo.pImageMemoryBarriers = @ptrCast(&texread_barrier);
         vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
-
         try vk.endCommandBuffer(cmd_buf);
-        const sub_info: vk.SubmitInfo = .{
-            .commandBufferCount = 1,
-            .pCommandBuffers = @ptrCast(&cmd_buf),
+
+        const fetch = manager.upload_val.fetchAdd(1, .seq_cst) + 1;
+        const upload_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = manager.upload_semaphore, .value = fetch };
+        const sub_info: vk.SubmitInfo2 = .{
+            .commandBufferInfoCount = 1,
+            .pCommandBufferInfos = &.{.{ .commandBuffer = cmd_buf }},
+            .signalSemaphoreInfoCount = 1,
+            .pSignalSemaphoreInfos = &.{upload_signal},
         };
-        try vk.queueSubmit(ctx.queue, 1, @ptrCast(&sub_info), fence);
+        try vk.queueSubmit2(ctx.queue, 1, @ptrCast(&sub_info), null);
 
         const sampler_ci: vk.SamplerCreateInfo = .{
             .magFilter = .linear,
@@ -672,11 +759,11 @@ pub const AssetManager = struct {
             .borderColor = .float_transparent_black,
             .maxLod = @floatFromInt(image_ci.mipLevels),
         };
-        try vk.createSampler(ctx.device, &sampler_ci, null, &info.sampler);
+        try vk.createSampler(ctx.device, &sampler_ci, null, &descriptor.sampler);
 
         var view_ci: vk.ImageViewCreateInfo = .{
             .format = format,
-            .image = info.image,
+            .image = image.*,
             .subresourceRange = .{
                 .layerCount = image_ci.arrayLayers,
                 .levelCount = image_ci.mipLevels,
@@ -686,10 +773,18 @@ pub const AssetManager = struct {
         if (texture.isCubemap) {
             view_ci.viewType = .cube;
         } else view_ci.viewType = .@"2d";
-        try vk.createImageView(ctx.device, &view_ci, null, &info.view);
-        try vk.waitForFences(ctx.device, 1, @ptrCast(&fence), .True, std.math.maxInt(u64));
+        try vk.createImageView(ctx.device, &view_ci, null, &descriptor.imageView);
 
-        return info;
+        const waiti: vk.SemaphoreWaitInfo = .{
+            .semaphoreCount = 1,
+            .pValues = &.{fetch},
+            .pSemaphores = &.{manager.upload_semaphore},
+        };
+        try vk.waitSemaphores(ctx.device, &waiti, std.math.maxInt(u64));
+
+        return .{
+            .id = id,
+        };
     }
 
     pub fn loadLevel() void {}

@@ -63,21 +63,40 @@ var mouse_state: sdl.MouseButtonFlags = .{};
 var space_advance: f32 = undefined;
 
 pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    var io = init.io;
     const a_static = init.arena.allocator();
     var arena_startup = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const a_startup = arena_startup.allocator();
     var arena_frame = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const a_frame = arena_frame.allocator();
-    var io = init.io;
 
-    const level_file = try Io.Dir.cwd().openFile(io, "scene.zon", .{});
-    defer level_file.close(io);
-    const stat = try level_file.stat(io);
-    const level_buffer = try a_startup.alloc(u8, stat.size + 1);
-    @memset(level_buffer, 0);
-    const size = try level_file.readPositionalAll(io, level_buffer, 0);
-    const level = try std.zon.parse.fromSliceAlloc(SceneZon, a_startup, level_buffer[0..size :0], null, .{});
-    _ = level;
+    var my_pool: zkf.ObjectPool(u64) = try .init(gpa, 5);
+    try my_pool.push(8);
+    try my_pool.push(9);
+    try my_pool.push(10);
+    try my_pool.push(11);
+    try my_pool.push(12);
+    my_pool.pop(2);
+    my_pool.pop(4);
+    try my_pool.push(13);
+    try my_pool.push(14);
+    my_pool.pop(3);
+
+    log.debug("{}", .{my_pool});
+    for (my_pool.pool) |elem| {
+        log.debug("{}", .{elem});
+    }
+    my_pool.deinit(gpa);
+
+    // const level_file = try Io.Dir.cwd().openFile(io, "scene.zon", .{});
+    // defer level_file.close(io);
+    // const stat = try level_file.stat(io);
+    // const level_buffer = try a_startup.alloc(u8, stat.size + 1);
+    // @memset(level_buffer, 0);
+    // const size = try level_file.readPositionalAll(io, level_buffer, 0);
+    // const level = try std.zon.parse.fromSliceAlloc(SceneZon, a_startup, level_buffer[0..size :0], null, .{});
+    // _ = level;
 
     var ctx: zkf.Context = try .init(a_startup);
     defer ctx.deinit();
@@ -131,14 +150,13 @@ pub fn main(init: std.process.Init) !void {
 
     //textures
 
+    var asset: zkf.AssetManager = try .init(ctx, gpa, .{ .combined_image_sampler = 1000, .storage_image = 100 });
+    defer asset.deinit(ctx, gpa);
+    const handle = try asset.loadTexture(ctx, gpa, commandPool, "assets/skybox.ktx2");
+    try vk.nameHandle(ctx.device, asset.images.items[handle.id], "testing");
+
     var texture_descriptors: [5]vk.DescriptorImageInfo = undefined;
-    const skybox = try zkf.loadImage(a_static, "assets/skybox.ktx2", ctx.device, ctx.vka, ctx.queue, commandPool);
-    defer vma.destroyImage(ctx.vka, skybox.image, skybox.alon);
-    defer vk.destroyImageView(ctx.device, skybox.view, null);
-    defer vk.destroySampler(ctx.device, skybox.sampler, null);
-    texture_descriptors[3].imageLayout = .read_only_optimal;
-    texture_descriptors[3].sampler = skybox.sampler;
-    texture_descriptors[3].imageView = skybox.view;
+    texture_descriptors[3] = asset.image_descriptors.items[handle.id];
 
     var textures: [3]Texture = undefined;
     defer for (textures) |texture| {
