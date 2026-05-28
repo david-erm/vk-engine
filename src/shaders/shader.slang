@@ -8,33 +8,33 @@ struct VSInput {
 };
 
 struct VSOutput {
+    nointerpolation Material mat;
     float4 Pos : SV_POSITION;
     float3 Normal;
     float2 UV;
     float3 factor;
     float3 LightVec;
     float3 ViewVec;
-    uint32_t instanceIndex;
 };
 
 
 [shader("vertex")]
-VSOutput main(VSInput input, uniform ShaderData *shaderData, uint instanceIndex : SV_VulkanInstanceID)
+VSOutput main(VSInput input, uniform Push push, uint instanceIndex : SV_VulkanInstanceID)
 {
     VSOutput output;
-    Pose pose = shaderData->poses[instanceIndex];
-    Pose cam = shaderData->cam;
+    Pose pose = push.poses[instanceIndex];
+    Pose cam = push.scene.cam;
 
     float3 fragPos = rotate(rotate(input.Pos * pose.pos.w, pose.rot) + pose.pos.xyz - cam.pos.xyz, conj(cam.rot)) ;
     output.Normal = rotate(input.Normal, qmul(conj(cam.rot), pose.rot));
-    output.LightVec = rotate(shaderData->lightPos.xyz - cam.pos.xyz, conj(cam.rot)) - fragPos;
+    output.LightVec = rotate(push.scene.lightPos.xyz - cam.pos.xyz, conj(cam.rot)) - fragPos;
 
-    output.Pos = mul(shaderData->projection, float4(fragPos, 1.0));
+    output.Pos = mul(push.scene.projection, float4(fragPos, 1.0));
     output.ViewVec  = -fragPos;
 
-    output.instanceIndex = instanceIndex;
+    output.mat = push.materials[instanceIndex];
     output.UV = input.uv;
-    output.factor = (shaderData->selected == instanceIndex? 3.0f : 1.0f);
+    output.factor = (push.scene.selected == instanceIndex? 3.0f : 1.0f);
     
     return output;
 }
@@ -49,8 +49,10 @@ float4 main(VSOutput input)
     float3 diffuse = max(dot(N, L), 0.0025);
     float3 specular = pow(max(dot(R, V), 0.00001), 64.0) * 0.75;
 
+    Material mat = input.mat;
+
     float3 color;
-    color = sampled[NonUniformResourceIndex(input.instanceIndex)].Sample(input.UV).rgb * input.factor;
+    color = sampled[NonUniformResourceIndex(mat.albedo)].Sample(input.UV).rgb * input.factor;
     return float4(color.rgb * (diffuse + float3(0.1)) + specular, 1.0);
   
 }

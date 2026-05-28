@@ -2,6 +2,7 @@
 - integrate bindgen to build system. extensions decided at build time.
     - maybe i need to allow pfn to be null? if i simply remove the extension funtions stuff will not compile.
 - generate slang structs from zig structs
+- fix the fucking update descriptors thing, order dependente
 
 # CHALLENGE:
 - fix the text rendering, make it actually good (Vertex pulling, only 1 quad for char? or 1 unit quad and 2 scale floats?)
@@ -10,12 +11,12 @@
     - surely can check for performance differences
 - finish allocator
 - upload queue for asset thingy # ?
-- freelist for texture pools # prolly itself being a pool instead of allocating integers
-    - https://discord.com/channels/427551838099996672/530530428621160448/1206993540710670376
+- program that parses gltf and auto converts their pbr textures to bcn using ktx tools # zig impt when? mr_oven ? 
 
 # GOAL:
 - start making abstractions
 - lets do aimtrainer (hopefully builds into somee wildwest type shi)
+- VK_EXT_descriptor_buffer ? heap not gonna happen in 10 billion years
 
 # IDEA:
 - separate type definitions into its own module so that generated files can consume them?
@@ -23,6 +24,8 @@
 - freetype harfbuzz for real font renderind at some point // maybe can cope with only freetype? 
 - pub const <alias> = .val for enums
 - move to non c ktx parser thingy
+
+- intrusive free list downsides?
 
 
 

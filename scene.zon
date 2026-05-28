@@ -8,4 +8,5 @@
     .models = .{
         "assets/helm/DamagedHelmet.gltf",
     },
+    .skybox = "assets/skybox.ktx2",
 }

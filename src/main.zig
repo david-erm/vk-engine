@@ -32,6 +32,14 @@ pub const ShaderData = extern struct {
     selected: u32 = 1,
 };
 
+pub const Scene = extern struct {
+    projection: Mat4 = .zero,
+    ortho: Mat4 = .zero,
+    cam: Pose = .{},
+    light_pos: Vec4 = .{ .x = 0.0, .y = -4.0, .z = 3.0, .w = 0.0 },
+    selected: u32 = 1,
+};
+
 const Glyph = struct {
     uv: Vec2 = .{},
     uv_max: Vec2 = .{},
@@ -49,7 +57,7 @@ const Thingies = struct {
 const SceneZon = struct {
     entities: []const Thingies,
     models: []const []const u8,
-    // skybox: []const u8,
+    skybox: []const u8,
 };
 
 const max_frames = 2;
@@ -71,37 +79,20 @@ pub fn main(init: std.process.Init) !void {
     var arena_frame = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const a_frame = arena_frame.allocator();
 
-    var my_pool: zkf.ObjectPool(u64) = try .init(gpa, 5);
-    try my_pool.push(8);
-    try my_pool.push(9);
-    try my_pool.push(10);
-    try my_pool.push(11);
-    try my_pool.push(12);
-    my_pool.pop(2);
-    my_pool.pop(4);
-    try my_pool.push(13);
-    try my_pool.push(14);
-    my_pool.pop(3);
-
-    log.debug("{}", .{my_pool});
-    for (my_pool.pool) |elem| {
-        log.debug("{}", .{elem});
-    }
-    my_pool.deinit(gpa);
-
-    // const level_file = try Io.Dir.cwd().openFile(io, "scene.zon", .{});
-    // defer level_file.close(io);
-    // const stat = try level_file.stat(io);
-    // const level_buffer = try a_startup.alloc(u8, stat.size + 1);
-    // @memset(level_buffer, 0);
-    // const size = try level_file.readPositionalAll(io, level_buffer, 0);
-    // const level = try std.zon.parse.fromSliceAlloc(SceneZon, a_startup, level_buffer[0..size :0], null, .{});
-    // _ = level;
-
     var ctx: zkf.Context = try .init(a_startup);
     defer ctx.deinit();
     var rctx: zkf.RenderContext = try .init(&ctx, a_static, 1920, 1080, "testing", max_frames);
     defer rctx.deinit(ctx);
+
+    var commandPool: vk.CommandPool = undefined;
+    var command_buffers: [max_frames]vk.CommandBuffer = undefined;
+    defer vk.destroyCommandPool(ctx.device, commandPool, null);
+    {
+        const commandPoolCI: vk.CommandPoolCreateInfo = .{ .flags = .{ .reset_command_buffer = true }, .queueFamilyIndex = ctx.qfamily };
+        try vk.createCommandPool(ctx.device, &commandPoolCI, null, &commandPool);
+        const cmdBufferCI: vk.CommandBufferAllocateInfo = .{ .commandPool = commandPool, .commandBufferCount = max_frames, .level = .primary };
+        try vk.allocateCommandBuffers(ctx.device, &cmdBufferCI, &command_buffers);
+    }
 
     _ = sdl.setWindowRelativeMouseMode(rctx.window, true);
 
@@ -138,67 +129,35 @@ pub fn main(init: std.process.Init) !void {
     }, .mapped_vram);
     defer text_quad.deinit(ctx.vka);
 
-    var commandPool: vk.CommandPool = undefined;
-    var command_buffers: [max_frames]vk.CommandBuffer = undefined;
-    defer vk.destroyCommandPool(ctx.device, commandPool, null);
-    {
-        const commandPoolCI: vk.CommandPoolCreateInfo = .{ .flags = .{ .reset_command_buffer = true }, .queueFamilyIndex = ctx.qfamily };
-        try vk.createCommandPool(ctx.device, &commandPoolCI, null, &commandPool);
-        const cmdBufferCI: vk.CommandBufferAllocateInfo = .{ .commandPool = commandPool, .commandBufferCount = max_frames, .level = .primary };
-        try vk.allocateCommandBuffers(ctx.device, &cmdBufferCI, &command_buffers);
-    }
-
     //textures
-
+    //
     var asset: zkf.AssetManager = try .init(ctx, gpa, .{ .combined_image_sampler = 1000, .storage_image = 100 });
     defer asset.deinit(ctx, gpa);
-    const handle = try asset.loadTexture(ctx, gpa, commandPool, "assets/skybox.ktx2");
-    try vk.nameHandle(ctx.device, asset.images.items[handle.id], "testing");
 
-    var texture_descriptors: [5]vk.DescriptorImageInfo = undefined;
-    texture_descriptors[3] = asset.image_descriptors.items[handle.id];
+    //loading scene
+    const helm = try asset.loadGltf(ctx, io, gpa, commandPool, "assets/helm/DamagedHelmet.gltf");
+    defer {
+        asset.popTexture(ctx, helm.albedo);
+        asset.popTexture(ctx, helm.metallic_roughness);
+        asset.popTexture(ctx, helm.normal);
+        asset.popTexture(ctx, helm.occlusion);
+        asset.popTexture(ctx, helm.emissive);
+    }
 
-    var textures: [3]Texture = undefined;
-    defer for (textures) |texture| {
-        vk.destroySampler(ctx.device, texture.sampler, null);
-        vk.destroyImageView(ctx.device, texture.view, null);
-        vma.destroyImage(ctx.vka, texture.image, texture.alon);
+    var handles: [3]zkf.AssetManager.ImageHandle = undefined;
+    defer for (handles) |handle| {
+        asset.popTexture(ctx, handle);
     };
-    for ((&textures)[0..3], 0..) |*texture, i| {
+    for (0..3) |i| {
         var buf: [128]u8 = @splat(0);
         const filename = try std.fmt.bufPrintSentinel(&buf, "assets/suzanne{}.ktx2", .{i}, 0);
-
-        texture.* = try zkf.loadImage(a_static, filename, ctx.device, ctx.vka, ctx.queue, commandPool);
-
-        texture_descriptors[i] = .{
-            .sampler = texture.sampler,
-            .imageView = texture.view,
-            .imageLayout = .read_only_optimal,
-        };
+        handles[i] = try asset.loadTexture(ctx, gpa, commandPool, filename);
+        try vk.nameHandle(ctx.device, asset.images.pool[handles[i].id].val, filename);
     }
 
-    const helm_path = "assets/helm";
-    const damaged_helmet_gltf = try Io.Dir.cwd().readFileAlloc(
-        io,
-        try std.fmt.allocPrint(a_startup, "{s}/{s}", .{ helm_path, "DamagedHelmet.gltf" }),
-        a_startup,
-        .unlimited,
-    );
-    var g = gltf.init(std.heap.page_allocator);
-    try g.parse(@alignCast(damaged_helmet_gltf));
-    g.debugPrint();
-
-    for (g.data.images) |img| {
-        const filename = try std.fmt.allocPrintSentinel(a_startup, "{s}/{s}", .{ helm_path, img.uri.? }, 0);
-        const bcn = try zkf.loadImage(a_static, filename, ctx.device, ctx.vka, ctx.queue, commandPool);
-        try vk.nameHandle(ctx.device, bcn.image, filename);
-
-        vk.destroySampler(ctx.device, bcn.sampler, null);
-        vk.destroyImageView(ctx.device, bcn.view, null);
-        vma.destroyImage(ctx.vka, bcn.image, bcn.alon);
-    }
-
-    g.deinit();
+    const handle2 = try asset.loadTexture(ctx, gpa, commandPool, "assets/skybox.ktx2");
+    defer asset.popTexture(ctx, handle2);
+    try vk.nameHandle(ctx.device, asset.images.pool[handle2.id].val, "testing");
 
     //fonts
     var ft: c.FT_Library = undefined;
@@ -263,11 +222,11 @@ pub fn main(init: std.process.Init) !void {
     try vk.createSampler(ctx.device, &atlas_sampler_ci, null, &atlas_sampler);
     defer vk.destroySampler(ctx.device, atlas_sampler, null);
 
-    texture_descriptors[4] = .{
-        .sampler = atlas_sampler,
-        .imageView = atlas_view,
-        .imageLayout = .read_only_optimal,
-    };
+    // texture_descriptors[4] = .{
+    //     .sampler = atlas_sampler,
+    //     .imageView = atlas_view,
+    //     .imageLayout = .read_only_optimal,
+    // };
 
     const semaphore_type: vk.SemaphoreTypeCreateInfo = .{ .semaphoreType = .timeline };
     const semaphore_ci: vk.SemaphoreCreateInfo = .{ .pNext = &semaphore_type };
@@ -501,10 +460,10 @@ pub fn main(init: std.process.Init) !void {
             },
             .{
                 .dstSet = desc_set,
-                .descriptorType = .combined_image_sampler,
-                .descriptorCount = 5,
                 .dstBinding = 0,
-                .pImageInfo = &texture_descriptors,
+                .descriptorType = .combined_image_sampler,
+                .descriptorCount = handle2.id,
+                .pImageInfo = asset.image_descriptors.ptr,
             },
         };
 
@@ -731,16 +690,38 @@ pub fn main(init: std.process.Init) !void {
         try vk.createComputePipelines(ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&boxblur_pipeline));
     }
 
-    var shader_buffers: [max_frames]zkf.Buffer = undefined;
-    defer for (shader_buffers) |buffer| {
+    var scene_buffer: [max_frames]zkf.Buffer = undefined;
+    defer for (scene_buffer) |buffer| {
         buffer.deinit(ctx.vka);
     };
     for (0..max_frames) |i| {
         const uBufferCI: vk.BufferCreateInfo = .{
-            .size = @sizeOf(ShaderData),
+            .size = @sizeOf(Scene),
             .usage = .{ .shader_device_address = true },
         };
-        shader_buffers[i] = try .init(ctx.vka, uBufferCI, .mapped_vram);
+        scene_buffer[i] = try .init(ctx.vka, uBufferCI, .mapped_vram);
+    }
+    var poses_buffer: [max_frames]zkf.Buffer = undefined;
+    defer for (poses_buffer) |buffer| {
+        buffer.deinit(ctx.vka);
+    };
+    for (&poses_buffer) |*buffer| {
+        const ci: vk.BufferCreateInfo = .{
+            .size = @sizeOf(Pose) * 5,
+            .usage = .{ .shader_device_address = true },
+        };
+        buffer.* = try .init(ctx.vka, ci, .mapped_vram);
+    }
+    var mat_buf: [max_frames]zkf.Buffer = undefined;
+    defer for (mat_buf) |buf| {
+        buf.deinit(ctx.vka);
+    };
+    for (&mat_buf) |*buf| {
+        const ci: vk.BufferCreateInfo = .{
+            .size = @sizeOf(zkf.AssetManager.Material) * 5,
+            .usage = .{ .shader_device_address = true },
+        };
+        buf.* = try .init(ctx.vka, ci, .mapped_vram);
     }
 
     //basic dt and quit
@@ -755,7 +736,9 @@ pub fn main(init: std.process.Init) !void {
     var signal_val: [max_frames]u64 = @splat(0);
 
     //"game stuff"
-    var shader_data: ShaderData = .{};
+    var scene: Scene = .{};
+    var poses: [5]Pose = @splat(.{});
+    var mats: [5]zkf.AssetManager.Material = undefined;
     var sel: u32 = 0;
 
     //some stats
@@ -842,27 +825,30 @@ pub fn main(init: std.process.Init) !void {
 
         const aspect = @as(f32, @floatFromInt(rctx.windowsize.width)) / @as(f32, @floatFromInt(rctx.windowsize.height));
 
-        shader_data.projection = .perspective(cam.fov, aspect, 0.1, 32.0);
-        shader_data.ortho = .ortho(0.0, @floatFromInt(rctx.windowsize.width), 0.0, @floatFromInt(rctx.windowsize.height));
-        shader_data.cam = cam.pose;
-        shader_data.selected = sel;
-        for ((&shader_data.poses)[0..3], 0..) |*pose, i| {
+        scene.projection = .perspective(cam.fov, aspect, 0.1, 32.0);
+        scene.ortho = .ortho(0.0, @floatFromInt(rctx.windowsize.width), 0.0, @floatFromInt(rctx.windowsize.height));
+        scene.cam = cam.pose;
+        scene.selected = sel;
+        for (0..3) |i| {
             const idx: f32 = @floatFromInt(i);
             const pos: Vec3 = .{ .x = (idx - 1.0) * 3.0, .y = -(idx), .z = 0.0 };
             const lookup: [4]Vec3 = .{
-                Vec3{ .z = @sin(dT) },
-                Vec3{ .z = 1 },
-                Vec3{ .x = 1 },
                 Vec3{ .x = -1 },
+                Vec3{ .x = 1 },
+                Vec3{ .y = 1 },
+                Vec3{ .y = -1 },
             };
 
-            pose.pos = pos;
-            pose.extra = 1.0;
-            pose.rot = pose.rot.mul(.fromAngleAxis(std.math.pi * 0.5 * dT, lookup[i])).normalize();
+            poses[i].pos = pos;
+            poses[i].extra = 1.0;
+            poses[i].rot = poses[i].rot.mul(.fromAngleAxis(std.math.pi * 0.5 * dT, lookup[i])).normalize();
+            mats[i].albedo = handles[i];
         }
-        shader_data.poses[4].pos = .{ .z = -2 };
+        poses_buffer[fif_index].write(0, poses);
+        poses_buffer[fif_index].write(4 * @sizeOf(Pose), .{ .pos = .{ .z = -2 } });
 
-        shader_buffers[fif_index].write(0, shader_data);
+        scene_buffer[fif_index].write(0, scene);
+        mat_buf[fif_index].write(0, mats);
 
         const cb: vk.CommandBuffer = command_buffers[fif_index];
         try vk.resetCommandBuffer(cb, .{});
@@ -929,7 +915,9 @@ pub fn main(init: std.process.Init) !void {
 
                 vk.cmdBindPipeline(cb, .graphics, pipeline);
                 vk.cmdBindDescriptorSets(cb, .graphics, pipeline_layout, 0, 1, @ptrCast(&desc_set), 0, undefined);
-                vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&shader_buffers[fif_index].address(ctx.device)));
+                vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&scene_buffer[fif_index].address(ctx.device)));
+                vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 8, 8, @ptrCast(&poses_buffer[fif_index].address(ctx.device)));
+                vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 16, 8, @ptrCast(&mat_buf[fif_index].address(ctx.device)));
 
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&suzanne_buffer.handle), &.{0});
                 vk.cmdBindIndexBuffer(cb, suzanne_buffer.handle, vBufferSize, .uint32);

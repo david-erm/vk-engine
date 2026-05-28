@@ -3,6 +3,16 @@ module util;
 // public vk::binding(0, 0)] Texture2D images[];
 // public [vk::binding(0, 0)] TextureCube cubes[];
 
+public struct Material {
+    public uint albedo;  
+    public uint metallic_roughness;  
+    public uint normal;  
+    public uint occlusion;  
+    public uint emissive;  
+
+    uint pad[3];
+};
+
 public struct Pose {
     public float4 pos;
     public float4 rot;
@@ -12,7 +22,9 @@ public struct Scene {
     public float4x4 projection;
     public float4x4 ortho;
     public Pose cam; 
-    public float delta_time;
+    public float4 lightPos;
+    public uint32_t selected;
+    // public float delta_time;
 };
 
 public struct ShaderData {
@@ -27,6 +39,7 @@ public struct ShaderData {
 public struct Push {
     public Scene* scene; 
     public Pose* poses;
+    public Material* materials;
 };
 
 //Quat operations

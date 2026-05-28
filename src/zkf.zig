@@ -1,6 +1,8 @@
 const std = @import("std");
+const Io = std.Io;
 pub const c = @import("c");
 const vk = @import("vk");
+const gltf = @import("zgltf").Gltf;
 const sdl = @import("sdl.zig");
 const vma = @import("vma.zig");
 const ktx = @import("ktx.zig");
@@ -538,7 +540,7 @@ pub fn ObjectPool(T: type) type {
     return struct {
         const Error = error{OutOfMemory};
         const list_end = std.math.maxInt(u32);
-        pub const Element = union(enum) {
+        pub const Element = union {
             next: u32,
             val: T,
         };
@@ -560,11 +562,12 @@ pub fn ObjectPool(T: type) type {
             };
         }
 
-        pub fn push(pool: *@This(), val: T) Error!void {
+        pub fn push(pool: *@This(), val: T) Error!u32 {
             if (pool.head != list_end) {
                 const idx = pool.head;
                 pool.head = pool.pool[idx].next;
                 pool.pool[idx] = .{ .val = val };
+                return idx;
             } else {
                 return Error.OutOfMemory;
             }
@@ -581,11 +584,11 @@ pub fn ObjectPool(T: type) type {
     };
 }
 
+// need to do some cursed metaprogramming to have mutliple arrays with the freelist thing
 pub const AssetManager = struct {
-    // images: ObjectPool(vk.Image),
-    images: std.ArrayList(vk.Image),
-    image_descriptors: std.ArrayList(vk.DescriptorImageInfo),
-    image_allocations: std.ArrayList(vma.Allocation),
+    images: ObjectPool(vk.Image),
+    image_descriptors: []vk.DescriptorImageInfo,
+    image_allocations: []vma.Allocation,
 
     descriptor_set: vk.DescriptorSet,
     descriptor_layout: vk.DescriptorSetLayout,
@@ -606,9 +609,9 @@ pub const AssetManager = struct {
         }
 
         var out: AssetManager = undefined;
-        out.images = try .initCapacity(gpa, total_images);
-        out.image_descriptors = try .initCapacity(gpa, total_images);
-        out.image_allocations = try .initCapacity(gpa, total_images);
+        out.images = try .init(gpa, total_images);
+        out.image_descriptors = try gpa.alloc(vk.DescriptorImageInfo, total_images);
+        out.image_allocations = try gpa.alloc(vma.Allocation, total_images);
         out.upload_val = .init(0);
         const semaphore_type: vk.SemaphoreTypeCreateInfo = .{ .semaphoreType = .timeline };
         const semaphore_ci: vk.SemaphoreCreateInfo = .{ .pNext = &semaphore_type };
@@ -619,34 +622,25 @@ pub const AssetManager = struct {
 
     pub fn deinit(manager: *AssetManager, ctx: Context, gpa: std.mem.Allocator) void {
         vk.destroySemaphore(ctx.device, manager.upload_semaphore, null);
-        for (manager.image_descriptors.items, manager.images.items, manager.image_allocations.items) |descriptor, image, alloc| {
-            vma.destroyImage(ctx.vka, image, alloc);
-            vk.destroySampler(ctx.device, descriptor.sampler, null);
-            vk.destroyImageView(ctx.device, descriptor.imageView, null);
-        }
-        manager.images.deinit(gpa);
-        manager.image_descriptors.deinit(gpa);
-        manager.image_allocations.deinit(gpa);
+        gpa.free(manager.images.pool);
+        gpa.free(manager.image_allocations);
+        gpa.free(manager.image_descriptors);
     }
 
-    pub const ImageHandle = struct {
-        id: usize,
-    };
-
+    pub const ImageHandle = extern struct { id: u32 };
     pub fn loadTexture(manager: *AssetManager, ctx: Context, gpa: std.mem.Allocator, cp: vk.CommandPool, filename: [:0]const u8) !ImageHandle {
-        log.debug("attempting to open: {s}", .{filename});
+        log.debug("attempting to open {q}", .{filename});
 
-        const image = manager.images.addOneAssumeCapacity();
-        var descriptor = manager.image_descriptors.addOneAssumeCapacity();
+        const idx = try manager.images.push(undefined);
+        const image = &manager.images.pool[idx].val;
+        const descriptor = &manager.image_descriptors[idx];
+        const allocation = &manager.image_allocations[idx];
         descriptor.imageLayout = .read_only_optimal;
-        const allocation = manager.image_allocations.addOneAssumeCapacity();
-        const id: u64 = manager.images.items.len - 1;
 
         var texture: *ktx.Texture = try .fromNamedFile(filename.ptr, .{ .load_image_data_bit = true });
         defer texture.destroy();
 
         const format = texture.getVkFormat();
-
         var image_ci: vk.ImageCreateInfo = .{
             .arrayLayers = texture.numLayers,
             .imageType = @enumFromInt(texture.numDimensions - 1),
@@ -783,8 +777,64 @@ pub const AssetManager = struct {
         try vk.waitSemaphores(ctx.device, &waiti, std.math.maxInt(u64));
 
         return .{
-            .id = id,
+            .id = idx,
         };
+    }
+
+    pub const Material = extern struct {
+        albedo: ImageHandle,
+        metallic_roughness: ImageHandle,
+        normal: ImageHandle,
+        occlusion: ImageHandle,
+        emissive: ImageHandle,
+
+        pad: [3]u32 = @splat(0),
+    };
+    pub const Model = struct {};
+
+    pub fn loadGltf(manager: *AssetManager, ctx: Context, io: Io, gpa: std.mem.Allocator, cp: vk.CommandPool, path: []const u8) !Material {
+        log.debug("load model {q}", .{path});
+        var model = gltf.init(gpa);
+        defer model.deinit();
+        const dir = Io.Dir.path.dirname(path) orelse ".";
+        const buffer = try Io.Dir.cwd().readFileAllocOptions(io, path, gpa, .unlimited, .@"4", null);
+        defer gpa.free(buffer);
+        try model.parse(buffer);
+        const mat = model.data.materials[0];
+
+        const albedo = mat.metallic_roughness.base_color_texture orelse return error.MissingTexture;
+        const metallic_roughness = mat.metallic_roughness.metallic_roughness_texture orelse return error.MissingTexture;
+        const normal = mat.normal_texture orelse return error.MissingTexture;
+        const occlusion = mat.occlusion_texture orelse return error.MissingTexture;
+        const emissive = mat.emissive_texture orelse return error.MissingTexture;
+
+        const emissive_handle = try manager.loadTexture(ctx, gpa, cp, try makePath(&model.data, emissive, dir));
+        const occlusion_handle = try manager.loadTexture(ctx, gpa, cp, try makePath(&model.data, occlusion, dir));
+        const normal_handle = try manager.loadTexture(ctx, gpa, cp, try makePath(&model.data, normal, dir));
+        const metallic_roughness_handle = try manager.loadTexture(ctx, gpa, cp, try makePath(&model.data, metallic_roughness, dir));
+        const albedo_handle = try manager.loadTexture(ctx, gpa, cp, try makePath(&model.data, albedo, dir));
+
+        return .{
+            .albedo = albedo_handle,
+            .metallic_roughness = metallic_roughness_handle,
+            .normal = normal_handle,
+            .emissive = emissive_handle,
+            .occlusion = occlusion_handle,
+        };
+    }
+
+    inline fn makePath(data: *const gltf.Data, info: anytype, dir: []const u8) ![:0]const u8 {
+        var buf: [512]u8 = undefined;
+        return std.fmt.bufPrintSentinel(&buf, "{s}/{s}", .{ dir, data.images[info.index].uri.? }, 0);
+    }
+
+    pub fn popTexture(manager: *AssetManager, ctx: Context, handle: ImageHandle) void {
+        const image = manager.images.pool[handle.id].val;
+        const descriptor = manager.image_descriptors[handle.id];
+        manager.images.pop(handle.id);
+        vk.destroySampler(ctx.device, descriptor.sampler, null);
+        vk.destroyImageView(ctx.device, descriptor.imageView, null);
+        vma.destroyImage(ctx.vka, image, manager.image_allocations[handle.id]);
     }
 
     pub fn loadLevel() void {}
