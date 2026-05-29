@@ -584,7 +584,7 @@ pub fn ObjectPool(T: type) type {
     };
 }
 
-// need to do some cursed metaprogramming to have mutliple arrays with the freelist thing
+// TODO: need to do some cursed metaprogramming to have mutliple arrays with the freelist thing
 pub const AssetManager = struct {
     images: ObjectPool(vk.Image),
     image_descriptors: []vk.DescriptorImageInfo,
@@ -597,10 +597,9 @@ pub const AssetManager = struct {
     upload_semaphore: vk.Semaphore,
     upload_val: std.atomic.Value(u64),
 
-    limits: Limits,
     pub const Limits = struct {
-        combined_image_sampler: u64 = 0,
-        storage_image: u64 = 0,
+        combined_image_sampler: u32 = 0,
+        storage_image: u32 = 0,
     };
     pub fn init(ctx: Context, gpa: std.mem.Allocator, limits: Limits) !AssetManager {
         var total_images: u64 = 0;
@@ -617,11 +616,57 @@ pub const AssetManager = struct {
         const semaphore_ci: vk.SemaphoreCreateInfo = .{ .pNext = &semaphore_type };
         try vk.createSemaphore(ctx.device, &semaphore_ci, null, &out.upload_semaphore);
 
+        const flags: [2]vk.DescriptorBindingFlags = .{
+            .{ .partially_bound = true, .update_unused_while_pending = false },
+            .{ .partially_bound = true, .update_unused_while_pending = false },
+        };
+        const desc_bind_flags: vk.DescriptorSetLayoutBindingFlagsCreateInfo = .{ .pBindingFlags = &flags, .bindingCount = 2 };
+        const bindings = [_]vk.DescriptorSetLayoutBinding{
+            .{
+                .binding = 0,
+                .descriptorCount = limits.combined_image_sampler,
+                .descriptorType = .combined_image_sampler,
+                .stageFlags = .{ .fragment = true, .vertex = true, .compute = true },
+            },
+            .{
+                .binding = 1,
+                .descriptorCount = limits.storage_image,
+                .descriptorType = .storage_image,
+                .stageFlags = .{ .fragment = true, .vertex = true, .compute = true },
+            },
+        };
+        const desc_layout_ci: vk.DescriptorSetLayoutCreateInfo = .{
+            .pNext = &desc_bind_flags,
+            .pBindings = &bindings,
+            .bindingCount = 2,
+        };
+        try vk.createDescriptorSetLayout(ctx.device, &desc_layout_ci, null, &out.descriptor_layout);
+
+        const sizes: []const vk.DescriptorPoolSize = &.{
+            .{ .descriptorCount = limits.combined_image_sampler, .type = .combined_image_sampler },
+            .{ .descriptorCount = limits.storage_image, .type = .storage_image },
+        };
+        const pool_ci: vk.DescriptorPoolCreateInfo = .{
+            .maxSets = 2,
+            .poolSizeCount = @intCast(sizes.len),
+            .pPoolSizes = sizes.ptr,
+        };
+        try vk.createDescriptorPool(ctx.device, &pool_ci, null, &out.descriptor_pool);
+
+        const set_ai: vk.DescriptorSetAllocateInfo = .{
+            .descriptorPool = out.descriptor_pool,
+            .descriptorSetCount = 1,
+            .pSetLayouts = @ptrCast(&out.descriptor_layout),
+        };
+        try vk.allocateDescriptorSets(ctx.device, &set_ai, @ptrCast(&out.descriptor_set));
+
         return out;
     }
 
     pub fn deinit(manager: *AssetManager, ctx: Context, gpa: std.mem.Allocator) void {
         vk.destroySemaphore(ctx.device, manager.upload_semaphore, null);
+        vk.destroyDescriptorPool(ctx.device, manager.descriptor_pool, null);
+        vk.destroyDescriptorSetLayout(ctx.device, manager.descriptor_layout, null);
         gpa.free(manager.images.pool);
         gpa.free(manager.image_allocations);
         gpa.free(manager.image_descriptors);
@@ -769,6 +814,16 @@ pub const AssetManager = struct {
         } else view_ci.viewType = .@"2d";
         try vk.createImageView(ctx.device, &view_ci, null, &descriptor.imageView);
 
+        const write: vk.WriteDescriptorSet = .{
+            .dstSet = manager.descriptor_set,
+            .dstBinding = 0,
+            .descriptorType = .combined_image_sampler,
+            .descriptorCount = 1,
+            .dstArrayElement = idx,
+            .pImageInfo = manager.image_descriptors.ptr + idx,
+        };
+        vk.updateDescriptorSets(ctx.device, 1, @ptrCast(&write), 0, undefined);
+
         const waiti: vk.SemaphoreWaitInfo = .{
             .semaphoreCount = 1,
             .pValues = &.{fetch},
@@ -787,8 +842,6 @@ pub const AssetManager = struct {
         normal: ImageHandle,
         occlusion: ImageHandle,
         emissive: ImageHandle,
-
-        pad: [3]u32 = @splat(0),
     };
     pub const Model = struct {};
 

@@ -6,21 +6,12 @@ struct VSOut {
     float2 tex_coords;
 };
 
-// static float2 quad[6] = {
-//     float2(0.0, 0.0),
-//     float2(0.0, 1.0),
-//     float2(1.0, 1.0),
-//     float2(0.0, 0.0),
-//     float2(1.0, 1.0),
-//     float2(1.0, 0.0),
-// }; 
-
 [shader("vertex")]
-VSOut main(float4 vertex, uniform ShaderData* shader_data) {
+VSOut main(float4 vertex, uniform Push push) {
     // float2 vertex = quad[vid];
     VSOut output;
 
-    output.Pos = mul(shader_data->ortho, float4(vertex.xy, 0.0, 1.0));
+    output.Pos = mul(push.scene.ortho, float4(vertex.xy, 0.0, 1.0));
     output.tex_coords = vertex.zw;
     
     return output;

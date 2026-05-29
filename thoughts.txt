@@ -3,6 +3,8 @@
     - maybe i need to allow pfn to be null? if i simply remove the extension funtions stuff will not compile.
 - generate slang structs from zig structs
 - fix the fucking update descriptors thing, order dependente
+- my god please integrate descriptors into asset
+- separate samplers
 
 # CHALLENGE:
 - fix the text rendering, make it actually good (Vertex pulling, only 1 quad for char? or 1 unit quad and 2 scale floats?)
@@ -16,7 +18,6 @@
 # GOAL:
 - start making abstractions
 - lets do aimtrainer (hopefully builds into somee wildwest type shi)
-- VK_EXT_descriptor_buffer ? heap not gonna happen in 10 billion years
 
 # IDEA:
 - separate type definitions into its own module so that generated files can consume them?
@@ -24,7 +25,6 @@
 - freetype harfbuzz for real font renderind at some point // maybe can cope with only freetype? 
 - pub const <alias> = .val for enums
 - move to non c ktx parser thingy
-
 - intrusive free list downsides?
 
 

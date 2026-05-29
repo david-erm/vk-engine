@@ -23,15 +23,6 @@ const Camera = zkf.Camera;
 const Texture = zkf.Texture;
 const ShaderDataBuffer = zkf.ShaderDataBuffer;
 
-pub const ShaderData = extern struct {
-    projection: Mat4 = .zero,
-    ortho: Mat4 = .zero,
-    cam: Pose = .{},
-    poses: [5]Pose = @splat(.{}),
-    light_pos: Vec4 = .{ .x = 0.0, .y = -4.0, .z = 3.0, .w = 0.0 },
-    selected: u32 = 1,
-};
-
 pub const Scene = extern struct {
     projection: Mat4 = .zero,
     ortho: Mat4 = .zero,
@@ -462,7 +453,7 @@ pub fn main(init: std.process.Init) !void {
                 .dstSet = desc_set,
                 .dstBinding = 0,
                 .descriptorType = .combined_image_sampler,
-                .descriptorCount = handle2.id,
+                .descriptorCount = handle2.id + 1,
                 .pImageInfo = asset.image_descriptors.ptr,
             },
         };
@@ -848,6 +839,7 @@ pub fn main(init: std.process.Init) !void {
         poses_buffer[fif_index].write(4 * @sizeOf(Pose), .{ .pos = .{ .z = -2 } });
 
         scene_buffer[fif_index].write(0, scene);
+        mats[3].albedo = handle2;
         mat_buf[fif_index].write(0, mats);
 
         const cb: vk.CommandBuffer = command_buffers[fif_index];
@@ -930,7 +922,7 @@ pub fn main(init: std.process.Init) !void {
                 vk.cmdBindPipeline(cb, .graphics, skybox_pipeline);
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&cube_buffer.handle), &.{0});
                 vk.cmdBindIndexBuffer(cb, cube_buffer.handle, @sizeOf(Vertex) * cube.vertices.items.len, .uint32);
-                vk.cmdDrawIndexed(cb, @intCast(cube.indices.items.len), 1, 0, 0, 0);
+                vk.cmdDrawIndexed(cb, @intCast(cube.indices.items.len), 1, 0, 0, 3);
 
                 vk.cmdBindPipeline(cb, .graphics, text_pipeline);
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&text_quad.handle), &.{0});

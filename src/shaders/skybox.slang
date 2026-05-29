@@ -5,17 +5,19 @@ import desc;
 struct VSOutput {
     float4 Pos : SV_POSITION;
     float3 local_pos;
+    uint index;
 };
 
 
 [shader("vertex")]
-VSOutput main(float3 pos, uniform ShaderData *shaderData)
+VSOutput main(float3 pos, uniform Push push, uint iidx : SV_VulkanInstanceID)
 {
     VSOutput output;
-    Pose cam = shaderData->cam;
+    Pose cam = push.scene.cam;
 
     output.local_pos = rotate(pos, cam.rot);
     output.Pos = float4(pos, 1.0).xyww;
+    output.index = push.materials[iidx].albedo;
     
     return output;
 }
@@ -24,6 +26,6 @@ VSOutput main(float3 pos, uniform ShaderData *shaderData)
 float4 main(VSOutput input)
 {
     input.local_pos.y = -input.local_pos.y;
-    return cubes[NonUniformResourceIndex(3)].Sample(input.local_pos);
+    return cubes[NonUniformResourceIndex(input.index)].Sample(input.local_pos);
 }
 
