@@ -7,6 +7,8 @@ const sdl = @import("sdl.zig");
 const vma = @import("vma.zig");
 const ktx = @import("ktx.zig");
 
+pub const AssetManager = @import("AssetManager.zig");
+
 const log = std.log.scoped(.howtovulkan);
 
 pub fn makeError(comptime err: type, ret: anytype) err!void {
@@ -318,20 +320,19 @@ pub const RenderContext = struct {
     swapchain_ci: vk.SwapchainCreateInfoKHR,
     sc_format: vk.Format,
     sc_imgs: []vk.Image,
-    sc_img_views: []vk.ImageView,
-    sc_view_dsc: []vk.DescriptorImageInfo,
+    sc_img_views: []AssetManager.ViewHandle,
     depth: Image,
     depth_ci: vk.ImageCreateInfo,
     loop_tml: vk.Semaphore,
     fif_semaphore: []vk.Semaphore,
     swapchain_semaphore: []vk.Semaphore,
 
-    pub fn deinit(rctx: *RenderContext, ctx: Context) void {
+    pub fn deinit(rctx: *RenderContext, ctx: *const Context, manager: *AssetManager) void {
         defer sdl.destroyWindow(&rctx.window);
         defer vk.destroySurfaceKHR(ctx.instance, rctx.surface, null);
         defer vk.destroySwapchainKHR(ctx.device, rctx.swapchain, null);
         defer for (rctx.sc_img_views) |view| {
-            vk.destroyImageView(ctx.device, view, null);
+            manager.freeStorageImage(ctx, view);
         };
         defer for (rctx.fif_semaphore) |smp| {
             vk.destroySemaphore(ctx.device, smp, null);
@@ -352,6 +353,7 @@ pub const RenderContext = struct {
         height: u32,
         name: [:0]const u8,
         frames_in_flight: usize,
+        manager: *AssetManager,
     ) !RenderContext {
         var rctx: RenderContext = undefined;
         rctx.windowsize.width = width;
@@ -406,7 +408,7 @@ pub const RenderContext = struct {
             rctx.sc_imgs = try static.alloc(vk.Image, image_count);
             try vk.getSwapchainImagesKHR(ctx.device, rctx.swapchain, &image_count, rctx.sc_imgs.ptr);
 
-            rctx.sc_img_views = try static.alloc(vk.ImageView, rctx.sc_imgs.len);
+            rctx.sc_img_views = try static.alloc(AssetManager.ViewHandle, rctx.sc_imgs.len);
             for (0..rctx.sc_imgs.len) |i| {
                 const image_viewCI: vk.ImageViewCreateInfo = .{
                     .image = rctx.sc_imgs[i],
@@ -418,12 +420,7 @@ pub const RenderContext = struct {
                         .levelCount = 1,
                     },
                 };
-                try vk.createImageView(ctx.device, &image_viewCI, null, &rctx.sc_img_views[i]);
-            }
-            rctx.sc_view_dsc = try static.alloc(vk.DescriptorImageInfo, rctx.sc_img_views.len);
-            for (rctx.sc_view_dsc, 0..) |*desc, i| {
-                desc.imageView = rctx.sc_img_views[i];
-                desc.imageLayout = .general;
+                rctx.sc_img_views[i] = try manager.allocStorageImage(ctx, image_viewCI);
             }
         }
 
@@ -483,7 +480,7 @@ pub const RenderContext = struct {
         return rctx;
     }
 
-    pub fn recreate_swap(rctx: *RenderContext, ctx: *const Context) !void {
+    pub fn recreate_swap(rctx: *RenderContext, ctx: *const Context, manager: *AssetManager) !void {
         _ = sdl.getWindowSize(rctx.window, @ptrCast(&rctx.windowsize.width), @ptrCast(&rctx.windowsize.height));
 
         try vk.queueWaitIdle(ctx.queue);
@@ -495,7 +492,7 @@ pub const RenderContext = struct {
         try vk.createSwapchainKHR(ctx.device, &rctx.swapchain_ci, null, &rctx.swapchain);
 
         for (rctx.sc_img_views) |view| {
-            vk.destroyImageView(ctx.device, view, null);
+            manager.freeStorageImage(ctx, view);
         }
 
         var count: u32 = @intCast(rctx.sc_imgs.len);
@@ -507,9 +504,7 @@ pub const RenderContext = struct {
                 .format = rctx.sc_format,
                 .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
             };
-            try vk.createImageView(ctx.device, &ci, null, &rctx.sc_img_views[i]);
-            rctx.sc_view_dsc[i].imageView = rctx.sc_img_views[i];
-            rctx.sc_view_dsc[i].imageLayout = .general;
+            rctx.sc_img_views[i] = try manager.allocStorageImage(ctx, ci);
         }
 
         for (rctx.swapchain_semaphore) |smp| {
@@ -573,6 +568,14 @@ pub fn ObjectPool(T: type) type {
             }
         }
 
+        pub fn get(pool: *@This(), idx: u32) T {
+            return pool.pool[idx].val;
+        }
+
+        pub fn getPtr(pool: *@This(), idx: u32) *T {
+            return &pool.pool[idx].val;
+        }
+
         pub fn pop(pool: *@This(), idx: u32) void {
             pool.pool[idx] = .{ .next = pool.head };
             pool.head = idx;
@@ -583,315 +586,6 @@ pub fn ObjectPool(T: type) type {
         }
     };
 }
-
-// TODO: need to do some cursed metaprogramming to have mutliple arrays with the freelist thing
-pub const AssetManager = struct {
-    images: ObjectPool(vk.Image),
-    image_descriptors: []vk.DescriptorImageInfo,
-    image_allocations: []vma.Allocation,
-
-    descriptor_set: vk.DescriptorSet,
-    descriptor_layout: vk.DescriptorSetLayout,
-    descriptor_pool: vk.DescriptorPool,
-
-    upload_semaphore: vk.Semaphore,
-    upload_val: std.atomic.Value(u64),
-
-    pub const Limits = struct {
-        combined_image_sampler: u32 = 0,
-        storage_image: u32 = 0,
-    };
-    pub fn init(ctx: Context, gpa: std.mem.Allocator, limits: Limits) !AssetManager {
-        var total_images: u64 = 0;
-        inline for (@typeInfo(Limits).@"struct".fields) |field| {
-            total_images += @field(limits, field.name);
-        }
-
-        var out: AssetManager = undefined;
-        out.images = try .init(gpa, total_images);
-        out.image_descriptors = try gpa.alloc(vk.DescriptorImageInfo, total_images);
-        out.image_allocations = try gpa.alloc(vma.Allocation, total_images);
-        out.upload_val = .init(0);
-        const semaphore_type: vk.SemaphoreTypeCreateInfo = .{ .semaphoreType = .timeline };
-        const semaphore_ci: vk.SemaphoreCreateInfo = .{ .pNext = &semaphore_type };
-        try vk.createSemaphore(ctx.device, &semaphore_ci, null, &out.upload_semaphore);
-
-        const flags: [2]vk.DescriptorBindingFlags = .{
-            .{ .partially_bound = true, .update_unused_while_pending = false },
-            .{ .partially_bound = true, .update_unused_while_pending = false },
-        };
-        const desc_bind_flags: vk.DescriptorSetLayoutBindingFlagsCreateInfo = .{ .pBindingFlags = &flags, .bindingCount = 2 };
-        const bindings = [_]vk.DescriptorSetLayoutBinding{
-            .{
-                .binding = 0,
-                .descriptorCount = limits.combined_image_sampler,
-                .descriptorType = .combined_image_sampler,
-                .stageFlags = .{ .fragment = true, .vertex = true, .compute = true },
-            },
-            .{
-                .binding = 1,
-                .descriptorCount = limits.storage_image,
-                .descriptorType = .storage_image,
-                .stageFlags = .{ .fragment = true, .vertex = true, .compute = true },
-            },
-        };
-        const desc_layout_ci: vk.DescriptorSetLayoutCreateInfo = .{
-            .pNext = &desc_bind_flags,
-            .pBindings = &bindings,
-            .bindingCount = 2,
-        };
-        try vk.createDescriptorSetLayout(ctx.device, &desc_layout_ci, null, &out.descriptor_layout);
-
-        const sizes: []const vk.DescriptorPoolSize = &.{
-            .{ .descriptorCount = limits.combined_image_sampler, .type = .combined_image_sampler },
-            .{ .descriptorCount = limits.storage_image, .type = .storage_image },
-        };
-        const pool_ci: vk.DescriptorPoolCreateInfo = .{
-            .maxSets = 2,
-            .poolSizeCount = @intCast(sizes.len),
-            .pPoolSizes = sizes.ptr,
-        };
-        try vk.createDescriptorPool(ctx.device, &pool_ci, null, &out.descriptor_pool);
-
-        const set_ai: vk.DescriptorSetAllocateInfo = .{
-            .descriptorPool = out.descriptor_pool,
-            .descriptorSetCount = 1,
-            .pSetLayouts = @ptrCast(&out.descriptor_layout),
-        };
-        try vk.allocateDescriptorSets(ctx.device, &set_ai, @ptrCast(&out.descriptor_set));
-
-        return out;
-    }
-
-    pub fn deinit(manager: *AssetManager, ctx: Context, gpa: std.mem.Allocator) void {
-        vk.destroySemaphore(ctx.device, manager.upload_semaphore, null);
-        vk.destroyDescriptorPool(ctx.device, manager.descriptor_pool, null);
-        vk.destroyDescriptorSetLayout(ctx.device, manager.descriptor_layout, null);
-        gpa.free(manager.images.pool);
-        gpa.free(manager.image_allocations);
-        gpa.free(manager.image_descriptors);
-    }
-
-    pub const ImageHandle = extern struct { id: u32 };
-    pub fn loadTexture(manager: *AssetManager, ctx: Context, gpa: std.mem.Allocator, cp: vk.CommandPool, filename: [:0]const u8) !ImageHandle {
-        log.debug("attempting to open {q}", .{filename});
-
-        const idx = try manager.images.push(undefined);
-        const image = &manager.images.pool[idx].val;
-        const descriptor = &manager.image_descriptors[idx];
-        const allocation = &manager.image_allocations[idx];
-        descriptor.imageLayout = .read_only_optimal;
-
-        var texture: *ktx.Texture = try .fromNamedFile(filename.ptr, .{ .load_image_data_bit = true });
-        defer texture.destroy();
-
-        const format = texture.getVkFormat();
-        var image_ci: vk.ImageCreateInfo = .{
-            .arrayLayers = texture.numLayers,
-            .imageType = @enumFromInt(texture.numDimensions - 1),
-            .format = format,
-            .extent = .{ .width = texture.baseWidth, .height = texture.baseHeight, .depth = texture.baseDepth },
-            .mipLevels = texture.numLevels,
-            .samples = .{ .@"1" = true },
-            .tiling = .optimal,
-            .usage = .{ .transfer_dst = true, .sampled = true },
-            .initialLayout = .undefined,
-        };
-
-        if (texture.isCubemap) {
-            image_ci.arrayLayers = texture.numFaces;
-            image_ci.flags.cube_compatible = true;
-        }
-
-        const alloc_ci: vma.AllocationCreateInfo = .{ .usage = .auto };
-        try vma.createImage(ctx.vka, &image_ci, &alloc_ci, image, allocation, null);
-        errdefer vma.destroyImage(ctx.vka, image.*, allocation.*);
-
-        const img_buffer = try Buffer.init(ctx.vka, .{ .size = texture.dataSize, .usage = .{ .transfer_src = true } }, .mapped_vram);
-        defer img_buffer.deinit(ctx.vka);
-        img_buffer.write(0, texture.pData[0..texture.dataSize]);
-
-        var cmd_buf: vk.CommandBuffer = undefined;
-        const cmd_buf_ai: vk.CommandBufferAllocateInfo = .{ .commandPool = cp, .commandBufferCount = 1, .level = .primary };
-        try vk.allocateCommandBuffers(ctx.device, &cmd_buf_ai, @ptrCast(&cmd_buf));
-        defer vk.freeCommandBuffers(ctx.device, cp, 1, @ptrCast(&cmd_buf));
-
-        const cmd_binfo: vk.CommandBufferBeginInfo = .{ .flags = .{ .one_time_submit = true } };
-        try vk.beginCommandBuffer(cmd_buf, &cmd_binfo);
-
-        const mem_barrier: vk.ImageMemoryBarrier2 = .{
-            .dstStageMask = .{ .all_transfer = true },
-            .dstAccessMask = .{ .transfer_write = true },
-            .oldLayout = .undefined,
-            .newLayout = .transfer_dst_optimal,
-            .image = image.*,
-            .subresourceRange = .{
-                .aspectMask = .{ .color = true },
-                .levelCount = image_ci.mipLevels,
-                .layerCount = image_ci.arrayLayers,
-            },
-        };
-        var barrier_texinfo: vk.DependencyInfo = .{
-            .imageMemoryBarrierCount = 1,
-            .pImageMemoryBarriers = @ptrCast(&mem_barrier),
-        };
-        vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
-
-        const copy_regions = try gpa.alloc(vk.BufferImageCopy, image_ci.mipLevels * image_ci.arrayLayers);
-        defer gpa.free(copy_regions);
-        for (0..image_ci.arrayLayers) |i| {
-            const layer: u32 = @intCast(i);
-            for (0..image_ci.mipLevels) |j| {
-                const level: u32 = @intCast(j);
-                copy_regions[i * image_ci.mipLevels + j] = vk.BufferImageCopy{
-                    .bufferOffset = try texture.getImageOffset(level, 0, layer),
-                    .imageSubresource = .{
-                        .aspectMask = .{ .color = true },
-                        .mipLevel = level,
-                        .baseArrayLayer = layer,
-                        .layerCount = 1,
-                    },
-                    .imageExtent = .{
-                        .width = texture.baseWidth >> @intCast(j),
-                        .height = texture.baseHeight >> @intCast(j),
-                        .depth = texture.baseDepth,
-                    },
-                };
-            }
-        }
-        vk.cmdCopyBufferToImage(cmd_buf, img_buffer.handle, image.*, .transfer_dst_optimal, @intCast(copy_regions.len), copy_regions.ptr);
-
-        const texread_barrier: vk.ImageMemoryBarrier2 = .{
-            .srcStageMask = .{ .all_transfer = true },
-            .srcAccessMask = .{ .transfer_write = true },
-            .dstStageMask = .{ .fragment_shader = true },
-            .dstAccessMask = .{ .shader_read = true },
-            .oldLayout = .transfer_dst_optimal,
-            .newLayout = .read_only_optimal,
-            .image = image.*,
-            .subresourceRange = .{
-                .aspectMask = .{ .color = true },
-                .levelCount = image_ci.mipLevels,
-                .layerCount = image_ci.arrayLayers,
-            },
-        };
-        barrier_texinfo.pImageMemoryBarriers = @ptrCast(&texread_barrier);
-        vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
-        try vk.endCommandBuffer(cmd_buf);
-
-        const fetch = manager.upload_val.fetchAdd(1, .seq_cst) + 1;
-        const upload_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = manager.upload_semaphore, .value = fetch };
-        const sub_info: vk.SubmitInfo2 = .{
-            .commandBufferInfoCount = 1,
-            .pCommandBufferInfos = &.{.{ .commandBuffer = cmd_buf }},
-            .signalSemaphoreInfoCount = 1,
-            .pSignalSemaphoreInfos = &.{upload_signal},
-        };
-        try vk.queueSubmit2(ctx.queue, 1, @ptrCast(&sub_info), null);
-
-        const sampler_ci: vk.SamplerCreateInfo = .{
-            .magFilter = .linear,
-            .minFilter = .linear,
-            .mipmapMode = .linear,
-            .anisotropyEnable = .True,
-            .maxAnisotropy = 8.0,
-            .borderColor = .float_transparent_black,
-            .maxLod = @floatFromInt(image_ci.mipLevels),
-        };
-        try vk.createSampler(ctx.device, &sampler_ci, null, &descriptor.sampler);
-
-        var view_ci: vk.ImageViewCreateInfo = .{
-            .format = format,
-            .image = image.*,
-            .subresourceRange = .{
-                .layerCount = image_ci.arrayLayers,
-                .levelCount = image_ci.mipLevels,
-                .aspectMask = .{ .color = true },
-            },
-        };
-        if (texture.isCubemap) {
-            view_ci.viewType = .cube;
-        } else view_ci.viewType = .@"2d";
-        try vk.createImageView(ctx.device, &view_ci, null, &descriptor.imageView);
-
-        const write: vk.WriteDescriptorSet = .{
-            .dstSet = manager.descriptor_set,
-            .dstBinding = 0,
-            .descriptorType = .combined_image_sampler,
-            .descriptorCount = 1,
-            .dstArrayElement = idx,
-            .pImageInfo = manager.image_descriptors.ptr + idx,
-        };
-        vk.updateDescriptorSets(ctx.device, 1, @ptrCast(&write), 0, undefined);
-
-        const waiti: vk.SemaphoreWaitInfo = .{
-            .semaphoreCount = 1,
-            .pValues = &.{fetch},
-            .pSemaphores = &.{manager.upload_semaphore},
-        };
-        try vk.waitSemaphores(ctx.device, &waiti, std.math.maxInt(u64));
-
-        return .{
-            .id = idx,
-        };
-    }
-
-    pub const Material = extern struct {
-        albedo: ImageHandle,
-        metallic_roughness: ImageHandle,
-        normal: ImageHandle,
-        occlusion: ImageHandle,
-        emissive: ImageHandle,
-    };
-    pub const Model = struct {};
-
-    pub fn loadGltf(manager: *AssetManager, ctx: Context, io: Io, gpa: std.mem.Allocator, cp: vk.CommandPool, path: []const u8) !Material {
-        log.debug("load model {q}", .{path});
-        var model = gltf.init(gpa);
-        defer model.deinit();
-        const dir = Io.Dir.path.dirname(path) orelse ".";
-        const buffer = try Io.Dir.cwd().readFileAllocOptions(io, path, gpa, .unlimited, .@"4", null);
-        defer gpa.free(buffer);
-        try model.parse(buffer);
-        const mat = model.data.materials[0];
-
-        const albedo = mat.metallic_roughness.base_color_texture orelse return error.MissingTexture;
-        const metallic_roughness = mat.metallic_roughness.metallic_roughness_texture orelse return error.MissingTexture;
-        const normal = mat.normal_texture orelse return error.MissingTexture;
-        const occlusion = mat.occlusion_texture orelse return error.MissingTexture;
-        const emissive = mat.emissive_texture orelse return error.MissingTexture;
-
-        const emissive_handle = try manager.loadTexture(ctx, gpa, cp, try makePath(&model.data, emissive, dir));
-        const occlusion_handle = try manager.loadTexture(ctx, gpa, cp, try makePath(&model.data, occlusion, dir));
-        const normal_handle = try manager.loadTexture(ctx, gpa, cp, try makePath(&model.data, normal, dir));
-        const metallic_roughness_handle = try manager.loadTexture(ctx, gpa, cp, try makePath(&model.data, metallic_roughness, dir));
-        const albedo_handle = try manager.loadTexture(ctx, gpa, cp, try makePath(&model.data, albedo, dir));
-
-        return .{
-            .albedo = albedo_handle,
-            .metallic_roughness = metallic_roughness_handle,
-            .normal = normal_handle,
-            .emissive = emissive_handle,
-            .occlusion = occlusion_handle,
-        };
-    }
-
-    inline fn makePath(data: *const gltf.Data, info: anytype, dir: []const u8) ![:0]const u8 {
-        var buf: [512]u8 = undefined;
-        return std.fmt.bufPrintSentinel(&buf, "{s}/{s}", .{ dir, data.images[info.index].uri.? }, 0);
-    }
-
-    pub fn popTexture(manager: *AssetManager, ctx: Context, handle: ImageHandle) void {
-        const image = manager.images.pool[handle.id].val;
-        const descriptor = manager.image_descriptors[handle.id];
-        manager.images.pop(handle.id);
-        vk.destroySampler(ctx.device, descriptor.sampler, null);
-        vk.destroyImageView(ctx.device, descriptor.imageView, null);
-        vma.destroyImage(ctx.vka, image, manager.image_allocations[handle.id]);
-    }
-
-    pub fn loadLevel() void {}
-};
 
 pub const Buffer = struct {
     handle: vk.Buffer,
@@ -975,13 +669,6 @@ pub const Camera = struct {
     }
 };
 
-pub const ShaderDataBuffer = struct {
-    allocInfo: vma.AllocationInfo,
-    alloc: vma.Allocation,
-    buffer: vk.Buffer,
-    address: vk.DeviceAddress,
-};
-
 pub const LoadedMesh = struct {
     indices: std.ArrayList(u32),
     vertices: std.ArrayList(Vertex),
@@ -993,154 +680,6 @@ pub const Texture = struct {
     view: vk.ImageView,
     sampler: vk.Sampler,
 };
-
-pub fn loadImage(a: std.mem.Allocator, filename: [:0]const u8, device: vk.Device, vka: vma.Allocator, queue: vk.Queue, command_pool: vk.CommandPool) !Texture {
-    log.debug("attempting to open: {s}", .{filename});
-    var texture: *ktx.Texture = try .fromNamedFile(filename.ptr, .{ .load_image_data_bit = true });
-    defer texture.destroy();
-
-    var info: Texture = undefined;
-    const format = texture.getVkFormat();
-
-    var image_ci: vk.ImageCreateInfo = .{
-        .arrayLayers = texture.numLayers,
-        .imageType = @enumFromInt(texture.numDimensions - 1),
-        .format = format,
-        .extent = .{ .width = texture.baseWidth, .height = texture.baseHeight, .depth = texture.baseDepth },
-        .mipLevels = texture.numLevels,
-        .samples = .{ .@"1" = true },
-        .tiling = .optimal,
-        .usage = .{ .transfer_dst = true, .sampled = true },
-        .initialLayout = .undefined,
-    };
-
-    if (texture.isCubemap) {
-        image_ci.arrayLayers = texture.numFaces;
-        image_ci.flags.cube_compatible = true;
-    }
-
-    const alloc_ci: vma.AllocationCreateInfo = .{ .usage = .auto };
-    try vma.createImage(vka, &image_ci, &alloc_ci, &info.image, &info.alon, null);
-    errdefer vma.destroyImage(vka, info.image, info.alon);
-
-    const img_buffer = try Buffer.init(
-        vka,
-        .{ .size = texture.dataSize, .usage = .{ .transfer_src = true } },
-        .{ .usage = .auto, .flags = .{
-            .mapped_bit = true,
-            .host_access_sequential_write_bit = true,
-        } },
-    );
-    defer img_buffer.deinit(vka);
-    img_buffer.write(0, texture.pData[0..texture.dataSize]);
-
-    const fence_ci: vk.FenceCreateInfo = .{};
-    var fence: vk.Fence = undefined;
-    try vk.createFence(device, &fence_ci, null, &fence);
-    defer vk.destroyFence(device, fence, null);
-
-    var cmd_buf: vk.CommandBuffer = undefined;
-    const cmd_buf_ai: vk.CommandBufferAllocateInfo = .{ .commandPool = command_pool, .commandBufferCount = 1, .level = .primary };
-    try vk.allocateCommandBuffers(device, &cmd_buf_ai, @ptrCast(&cmd_buf));
-    defer vk.freeCommandBuffers(device, command_pool, 1, @ptrCast(&cmd_buf));
-
-    const cmd_binfo: vk.CommandBufferBeginInfo = .{ .flags = .{ .one_time_submit = true } };
-    try vk.beginCommandBuffer(cmd_buf, &cmd_binfo);
-
-    const mem_barrier: vk.ImageMemoryBarrier2 = .{
-        .dstStageMask = .{ .all_transfer = true },
-        .dstAccessMask = .{ .transfer_write = true },
-        .oldLayout = .undefined,
-        .newLayout = .transfer_dst_optimal,
-        .image = info.image,
-        .subresourceRange = .{
-            .aspectMask = .{ .color = true },
-            .levelCount = image_ci.mipLevels,
-            .layerCount = image_ci.arrayLayers,
-        },
-    };
-    var barrier_texinfo: vk.DependencyInfo = .{
-        .imageMemoryBarrierCount = 1,
-        .pImageMemoryBarriers = @ptrCast(&mem_barrier),
-    };
-    vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
-
-    const copy_regions = try a.alloc(vk.BufferImageCopy, image_ci.mipLevels * image_ci.arrayLayers);
-    defer a.free(copy_regions);
-    for (0..image_ci.arrayLayers) |i| {
-        const layer: u32 = @intCast(i);
-        for (0..image_ci.mipLevels) |j| {
-            const level: u32 = @intCast(j);
-            copy_regions[i * image_ci.mipLevels + j] = vk.BufferImageCopy{
-                .bufferOffset = try texture.getImageOffset(level, 0, layer),
-                .imageSubresource = .{
-                    .aspectMask = .{ .color = true },
-                    .mipLevel = level,
-                    .baseArrayLayer = layer,
-                    .layerCount = 1,
-                },
-                .imageExtent = .{
-                    .width = texture.baseWidth >> @intCast(j),
-                    .height = texture.baseHeight >> @intCast(j),
-                    .depth = texture.baseDepth,
-                },
-            };
-        }
-    }
-    vk.cmdCopyBufferToImage(cmd_buf, img_buffer.handle, info.image, .transfer_dst_optimal, @intCast(copy_regions.len), copy_regions.ptr);
-
-    const texread_barrier: vk.ImageMemoryBarrier2 = .{
-        .srcStageMask = .{ .all_transfer = true },
-        .srcAccessMask = .{ .transfer_write = true },
-        .dstStageMask = .{ .fragment_shader = true },
-        .dstAccessMask = .{ .shader_read = true },
-        .oldLayout = .transfer_dst_optimal,
-        .newLayout = .read_only_optimal,
-        .image = info.image,
-        .subresourceRange = .{
-            .aspectMask = .{ .color = true },
-            .levelCount = image_ci.mipLevels,
-            .layerCount = image_ci.arrayLayers,
-        },
-    };
-    barrier_texinfo.pImageMemoryBarriers = @ptrCast(&texread_barrier);
-    vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
-
-    try vk.endCommandBuffer(cmd_buf);
-    const sub_info: vk.SubmitInfo = .{
-        .commandBufferCount = 1,
-        .pCommandBuffers = @ptrCast(&cmd_buf),
-    };
-    try vk.queueSubmit(queue, 1, @ptrCast(&sub_info), fence);
-
-    const sampler_ci: vk.SamplerCreateInfo = .{
-        .magFilter = .linear,
-        .minFilter = .linear,
-        .mipmapMode = .linear,
-        .anisotropyEnable = .True,
-        .maxAnisotropy = 8.0,
-        .borderColor = .float_transparent_black,
-        .maxLod = @floatFromInt(image_ci.mipLevels),
-    };
-    try vk.createSampler(device, &sampler_ci, null, &info.sampler);
-
-    var view_ci: vk.ImageViewCreateInfo = .{
-        .format = format,
-        .image = info.image,
-        .subresourceRange = .{
-            .layerCount = image_ci.arrayLayers,
-            .levelCount = image_ci.mipLevels,
-            .aspectMask = .{ .color = true },
-        },
-    };
-    if (texture.isCubemap) {
-        view_ci.viewType = .cube;
-    } else view_ci.viewType = .@"2d";
-    try vk.createImageView(device, &view_ci, null, &info.view);
-
-    try vk.waitForFences(device, 1, @ptrCast(&fence), .True, std.math.maxInt(u64));
-    return info;
-}
 
 const FileDataCtx = struct {
     io: *std.Io,

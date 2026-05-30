@@ -72,8 +72,12 @@ pub fn main(init: std.process.Init) !void {
 
     var ctx: zkf.Context = try .init(a_startup);
     defer ctx.deinit();
-    var rctx: zkf.RenderContext = try .init(&ctx, a_static, 1920, 1080, "testing", max_frames);
-    defer rctx.deinit(ctx);
+
+    var asset: zkf.AssetManager = try .init(ctx, gpa);
+    defer asset.deinit(ctx, gpa);
+
+    var rctx: zkf.RenderContext = try .init(&ctx, a_static, 1920, 1080, "testing", max_frames, &asset);
+    defer rctx.deinit(&ctx, &asset);
 
     var commandPool: vk.CommandPool = undefined;
     var command_buffers: [max_frames]vk.CommandBuffer = undefined;
@@ -121,34 +125,29 @@ pub fn main(init: std.process.Init) !void {
     defer text_quad.deinit(ctx.vka);
 
     //textures
-    //
-    var asset: zkf.AssetManager = try .init(ctx, gpa, .{ .combined_image_sampler = 1000, .storage_image = 100 });
-    defer asset.deinit(ctx, gpa);
 
     //loading scene
-    const helm = try asset.loadGltf(ctx, io, gpa, commandPool, "assets/helm/DamagedHelmet.gltf");
-    defer {
-        asset.popTexture(ctx, helm.albedo);
-        asset.popTexture(ctx, helm.metallic_roughness);
-        asset.popTexture(ctx, helm.normal);
-        asset.popTexture(ctx, helm.occlusion);
-        asset.popTexture(ctx, helm.emissive);
-    }
+    // const helm = try asset.loadGltf(ctx, io, gpa, commandPool, "assets/helm/DamagedHelmet.gltf");
+    // defer {
+    //     asset.popView(ctx, helm.albedo);
+    //     asset.popView(ctx, helm.metallic_roughness);
+    //     asset.popView(ctx, helm.normal);
+    //     asset.popView(ctx, helm.occlusion);
+    //     asset.popView(ctx, helm.emissive);
+    // }
 
-    var handles: [3]zkf.AssetManager.ImageHandle = undefined;
+    var handles: [3]zkf.AssetManager.Hate = undefined;
     defer for (handles) |handle| {
-        asset.popTexture(ctx, handle);
+        asset.popHate(ctx, handle);
     };
     for (0..3) |i| {
         var buf: [128]u8 = @splat(0);
         const filename = try std.fmt.bufPrintSentinel(&buf, "assets/suzanne{}.ktx2", .{i}, 0);
-        handles[i] = try asset.loadTexture(ctx, gpa, commandPool, filename);
-        try vk.nameHandle(ctx.device, asset.images.pool[handles[i].id].val, filename);
+        handles[i] = try asset.loadTexture(&ctx, gpa, commandPool, filename);
     }
 
-    const handle2 = try asset.loadTexture(ctx, gpa, commandPool, "assets/skybox.ktx2");
-    defer asset.popTexture(ctx, handle2);
-    try vk.nameHandle(ctx.device, asset.images.pool[handle2.id].val, "testing");
+    const handle2 = try asset.loadTexture(&ctx, gpa, commandPool, "assets/skybox.ktx2");
+    defer asset.popHate(ctx, handle2);
 
     //fonts
     var ft: c.FT_Library = undefined;
@@ -176,17 +175,13 @@ pub fn main(init: std.process.Init) !void {
         .mipLevels = 1,
         .arrayLayers = 1,
     };
-    const atlas_ai: vma.AllocationCreateInfo = .{ .usage = .auto };
-    var atlas: vk.Image = undefined;
-    var atlas_alloc: vma.Allocation = undefined;
-    try vma.createImage(ctx.vka, &atlas_ci, &atlas_ai, &atlas, &atlas_alloc, null);
-    try vk.nameHandle(ctx.device, atlas, "Font Atlas");
-
-    defer vma.destroyImage(ctx.vka, atlas, atlas_alloc);
+    const font_atlas = try asset.allocImage(&ctx, atlas_ci);
+    defer asset.freeImage(&ctx, font_atlas);
+    try vk.nameHandle(ctx.device, asset.getImage(font_atlas), "Font Atlas");
 
     const atlas_view_ci: vk.ImageViewCreateInfo = .{
         .format = .r8_unorm,
-        .image = atlas,
+        .image = asset.getImage(font_atlas),
         .viewType = .@"2d",
         .subresourceRange = .{
             .aspectMask = .{ .color = true },
@@ -194,30 +189,8 @@ pub fn main(init: std.process.Init) !void {
             .levelCount = 1,
         },
     };
-    var atlas_view: vk.ImageView = undefined;
-    try vk.createImageView(ctx.device, &atlas_view_ci, null, &atlas_view);
-    defer vk.destroyImageView(ctx.device, atlas_view, null);
-
-    const atlas_sampler_ci: vk.SamplerCreateInfo = .{
-        .minFilter = .linear,
-        .magFilter = .linear,
-        .addressModeU = .clamp_to_border,
-        .addressModeV = .clamp_to_border,
-        .addressModeW = .clamp_to_border,
-        .anisotropyEnable = .True,
-        .maxAnisotropy = 8.0,
-        .borderColor = .float_transparent_black,
-        .maxLod = 1,
-    };
-    var atlas_sampler: vk.Sampler = undefined;
-    try vk.createSampler(ctx.device, &atlas_sampler_ci, null, &atlas_sampler);
-    defer vk.destroySampler(ctx.device, atlas_sampler, null);
-
-    // texture_descriptors[4] = .{
-    //     .sampler = atlas_sampler,
-    //     .imageView = atlas_view,
-    //     .imageLayout = .read_only_optimal,
-    // };
+    const atlas_view = try asset.allocSampledImage(&ctx, atlas_view_ci);
+    defer asset.freeSampledImage(&ctx, atlas_view);
 
     const semaphore_type: vk.SemaphoreTypeCreateInfo = .{ .semaphoreType = .timeline };
     const semaphore_ci: vk.SemaphoreCreateInfo = .{ .pNext = &semaphore_type };
@@ -226,18 +199,17 @@ pub fn main(init: std.process.Init) !void {
     defer vk.destroySemaphore(ctx.device, upload_semaphore, null);
     var upload_count: u64 = 0;
 
+    const glyph_size = font_size * font_size;
+    const transfer_buffer_size = 5;
+    const transfer_ci: vk.BufferCreateInfo = .{ .size = glyph_size * transfer_buffer_size, .usage = .{ .transfer_src = true } };
+    const transfer_buffer: zkf.Buffer = try .init(ctx.vka, transfer_ci, .mapped_vram);
+    defer transfer_buffer.deinit(ctx.vka);
+
     var cmd_buf: vk.CommandBuffer = undefined;
     const cmd_buf_ai: vk.CommandBufferAllocateInfo = .{ .commandPool = commandPool, .commandBufferCount = 1, .level = .primary };
     try vk.allocateCommandBuffers(ctx.device, &cmd_buf_ai, @ptrCast(&cmd_buf));
     defer vk.freeCommandBuffers(ctx.device, commandPool, 1, @ptrCast(&cmd_buf));
     const cmd_binfo: vk.CommandBufferBeginInfo = .{ .flags = .{ .one_time_submit = true } };
-
-    const glyph_size = font_size * font_size;
-    const transfer_buffer_size = 5;
-    const transfer_ci: vk.BufferCreateInfo = .{ .size = glyph_size * transfer_buffer_size, .usage = .{ .transfer_src = true } };
-    const transfer_ai: vma.AllocationCreateInfo = .{ .usage = .auto, .flags = .{ .mapped_bit = true, .host_access_sequential_write_bit = true } };
-    const transfer_buffer: zkf.Buffer = try .init(ctx.vka, transfer_ci, transfer_ai);
-    defer transfer_buffer.deinit(ctx.vka);
 
     var transfer_offset: u32 = 0;
 
@@ -248,7 +220,7 @@ pub fn main(init: std.process.Init) !void {
             .dstAccessMask = .{ .transfer_write = true },
             .oldLayout = .undefined,
             .newLayout = .transfer_dst_optimal,
-            .image = atlas,
+            .image = asset.getImage(font_atlas),
             .subresourceRange = .{
                 .aspectMask = .{ .color = true },
                 .levelCount = 1,
@@ -301,7 +273,7 @@ pub fn main(init: std.process.Init) !void {
                 },
                 .bufferOffset = transfer_offset * glyph_size,
             };
-            vk.cmdCopyBufferToImage(cmd_buf, transfer_buffer.handle, atlas, .transfer_dst_optimal, 1, &.{copy_test});
+            vk.cmdCopyBufferToImage(cmd_buf, transfer_buffer.handle, asset.getImage(font_atlas), .transfer_dst_optimal, 1, &.{copy_test});
             transfer_offset += 1;
 
             out.uv = .{
@@ -349,11 +321,9 @@ pub fn main(init: std.process.Init) !void {
     var layout_barrier: vk.ImageMemoryBarrier2 = .{
         .srcStageMask = .{ .all_transfer = true },
         .srcAccessMask = .{ .transfer_write = true },
-        .dstStageMask = .{ .fragment_shader = true },
-        .dstAccessMask = .{ .shader_read = true },
         .oldLayout = .transfer_dst_optimal,
         .newLayout = .read_only_optimal,
-        .image = atlas,
+        .image = asset.getImage(font_atlas),
         .subresourceRange = .{
             .aspectMask = .{ .color = true },
             .levelCount = 1,
@@ -368,7 +338,6 @@ pub fn main(init: std.process.Init) !void {
     try vk.endCommandBuffer(cmd_buf);
     const smp_submit: vk.SemaphoreSubmitInfo = .{
         .semaphore = upload_semaphore,
-        .stageMask = .{ .all_transfer = true },
         .value = upload_count + 1,
     };
     const submiti: vk.SubmitInfo2 = .{
@@ -387,80 +356,6 @@ pub fn main(init: std.process.Init) !void {
     _ = c.FT_Done_Face(face);
     _ = c.FT_Done_FreeType(ft);
 
-    var desc_layout: vk.DescriptorSetLayout = undefined;
-    defer vk.destroyDescriptorSetLayout(ctx.device, desc_layout, null);
-    {
-        const flags: [2]vk.DescriptorBindingFlags = .{
-            .{ .partially_bound = true, .update_unused_while_pending = false },
-            .{ .partially_bound = true, .update_unused_while_pending = false },
-        };
-        const desc_bind_flags: vk.DescriptorSetLayoutBindingFlagsCreateInfo = .{ .pBindingFlags = &flags, .bindingCount = 2 };
-        const bindings = [_]vk.DescriptorSetLayoutBinding{
-            .{
-                .binding = 0,
-                .descriptorCount = 1000,
-                .descriptorType = .combined_image_sampler,
-                .stageFlags = .{ .fragment = true, .compute = true },
-            },
-            .{
-                .binding = 1,
-                .descriptorCount = 100,
-                .descriptorType = .storage_image,
-                .stageFlags = .{ .compute = true },
-            },
-        };
-        const desc_layout_ci: vk.DescriptorSetLayoutCreateInfo = .{
-            .pNext = &desc_bind_flags,
-            .pBindings = &bindings,
-            .bindingCount = 2,
-        };
-        try vk.createDescriptorSetLayout(ctx.device, &desc_layout_ci, null, &desc_layout);
-    }
-
-    var desc_pool: vk.DescriptorPool = undefined;
-    defer vk.destroyDescriptorPool(ctx.device, desc_pool, null);
-    {
-        const sizes: []const vk.DescriptorPoolSize = &.{
-            .{ .descriptorCount = 1000, .type = .combined_image_sampler },
-            .{ .descriptorCount = 100, .type = .storage_image },
-        };
-        const pool_ci: vk.DescriptorPoolCreateInfo = .{
-            .maxSets = 2,
-            .poolSizeCount = @intCast(sizes.len),
-            .pPoolSizes = sizes.ptr,
-        };
-        try vk.createDescriptorPool(ctx.device, &pool_ci, null, &desc_pool);
-    }
-
-    var desc_set: vk.DescriptorSet = undefined;
-    var writes: [2]vk.WriteDescriptorSet = undefined;
-    {
-        const set_ai: vk.DescriptorSetAllocateInfo = .{
-            .descriptorPool = desc_pool,
-            .descriptorSetCount = 1,
-            .pSetLayouts = @ptrCast(&desc_layout),
-        };
-        try vk.allocateDescriptorSets(ctx.device, &set_ai, @ptrCast(&desc_set));
-        writes = .{
-            .{
-                .dstSet = desc_set,
-                .descriptorType = .storage_image,
-                .descriptorCount = @intCast(rctx.sc_view_dsc.len),
-                .dstBinding = 1,
-                .pImageInfo = rctx.sc_view_dsc.ptr,
-            },
-            .{
-                .dstSet = desc_set,
-                .dstBinding = 0,
-                .descriptorType = .combined_image_sampler,
-                .descriptorCount = handle2.id + 1,
-                .pImageInfo = asset.image_descriptors.ptr,
-            },
-        };
-
-        vk.updateDescriptorSets(ctx.device, 2, &writes, 0, undefined);
-    }
-
     var pipeline_layout: vk.PipelineLayout = undefined;
     defer vk.destroyPipelineLayout(ctx.device, pipeline_layout, null);
     {
@@ -468,7 +363,7 @@ pub fn main(init: std.process.Init) !void {
             .pushConstantRangeCount = shaders.shader.push_constant_ranges.len,
             .pPushConstantRanges = &shaders.shader.push_constant_ranges,
             .setLayoutCount = 1,
-            .pSetLayouts = @ptrCast(&desc_layout),
+            .pSetLayouts = @ptrCast(&asset.descriptor_layout),
         };
         try vk.createPipelineLayout(ctx.device, &ci, null, &pipeline_layout);
     }
@@ -654,7 +549,7 @@ pub fn main(init: std.process.Init) !void {
     {
         const ci: vk.PipelineLayoutCreateInfo = .{
             .setLayoutCount = 1,
-            .pSetLayouts = @ptrCast(&desc_layout),
+            .pSetLayouts = @ptrCast(&asset.descriptor_layout),
             .pushConstantRangeCount = shaders.box.push_constant_ranges.len,
             .pPushConstantRanges = @ptrCast(&shaders.box.push_constant_ranges),
         };
@@ -833,13 +728,13 @@ pub fn main(init: std.process.Init) !void {
             poses[i].pos = pos;
             poses[i].extra = 1.0;
             poses[i].rot = poses[i].rot.mul(.fromAngleAxis(std.math.pi * 0.5 * dT, lookup[i])).normalize();
-            mats[i].albedo = handles[i];
+            mats[i].albedo = handles[i].sampled;
         }
         poses_buffer[fif_index].write(0, poses);
         poses_buffer[fif_index].write(4 * @sizeOf(Pose), .{ .pos = .{ .z = -2 } });
 
         scene_buffer[fif_index].write(0, scene);
-        mats[3].albedo = handle2;
+        mats[3].albedo = handle2.sampled;
         mat_buf[fif_index].write(0, mats);
 
         const cb: vk.CommandBuffer = command_buffers[fif_index];
@@ -870,7 +765,7 @@ pub fn main(init: std.process.Init) !void {
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 2, .pImageMemoryBarriers = &output_barriers });
 
             const color_attach_info: vk.RenderingAttachmentInfo = .{
-                .imageView = rctx.sc_img_views[swapchain_index],
+                .imageView = asset.getStorageImage(rctx.sc_img_views[swapchain_index]),
                 .imageLayout = .attachment_optimal,
                 .loadOp = .clear,
                 .storeOp = .store,
@@ -906,7 +801,7 @@ pub fn main(init: std.process.Init) !void {
                 vk.cmdSetScissor(cb, 0, 1, @ptrCast(&scissor));
 
                 vk.cmdBindPipeline(cb, .graphics, pipeline);
-                vk.cmdBindDescriptorSets(cb, .graphics, pipeline_layout, 0, 1, @ptrCast(&desc_set), 0, undefined);
+                vk.cmdBindDescriptorSets(cb, .graphics, pipeline_layout, 0, 1, @ptrCast(&asset.descriptor_set), 0, undefined);
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&scene_buffer[fif_index].address(ctx.device)));
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 8, 8, @ptrCast(&poses_buffer[fif_index].address(ctx.device)));
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 16, 8, @ptrCast(&mat_buf[fif_index].address(ctx.device)));
@@ -958,9 +853,9 @@ pub fn main(init: std.process.Init) !void {
             }
 
             vk.cmdBindPipeline(cb, .compute, boxblur_pipeline);
-            vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&desc_set), 0, undefined);
+            vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&asset.descriptor_set), 0, undefined);
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 0, 8, @ptrCast(&mouse_pos));
-            vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 8, 4, @ptrCast(&swapchain_index));
+            vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 8, 4, @ptrCast(&rctx.sc_img_views[swapchain_index]));
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 12, 4, &.{ 0, 0, 0, 0 });
             const compute_barrier1: vk.ImageMemoryBarrier2 = .{
                 .srcStageMask = .{ .color_attachment_output = true },
@@ -987,16 +882,6 @@ pub fn main(init: std.process.Init) !void {
             };
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = @ptrCast(&compute_barrier2) });
 
-            // const present_barrier: vk.ImageMemoryBarrier2 = .{
-            //     .srcStageMask = .{ .color_attachment_output = true },
-            //     .srcAccessMask = .{ .color_attachment_write = true },
-            //     .dstStageMask = .{ .color_attachment_output = true },
-            //     .dstAccessMask = .{},
-            //     .oldLayout = .attachment_optimal,
-            //     .newLayout = .present_srcKHR,
-            //     .image = rctx.sc_imgs[swapchain_index],
-            //     .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
-            // };
             const present_barrier: vk.ImageMemoryBarrier2 = .{
                 .srcStageMask = .{ .compute_shader = true },
                 .srcAccessMask = .{ .shader_storage_write = true },
@@ -1045,8 +930,7 @@ pub fn main(init: std.process.Init) !void {
 
         if (recreate_swap) {
             recreate_swap = false;
-            try rctx.recreate_swap(&ctx);
-            vk.updateDescriptorSets(ctx.device, 1, @ptrCast(&writes[0]), 0, undefined);
+            try rctx.recreate_swap(&ctx, &asset);
         }
     }
     arena_frame.deinit();

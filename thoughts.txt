@@ -2,9 +2,7 @@
 - integrate bindgen to build system. extensions decided at build time.
     - maybe i need to allow pfn to be null? if i simply remove the extension funtions stuff will not compile.
 - generate slang structs from zig structs
-- fix the fucking update descriptors thing, order dependente
-- my god please integrate descriptors into asset
-- separate samplers
+- maybe create system to create image view from imageHandle 
 
 # CHALLENGE:
 - fix the text rendering, make it actually good (Vertex pulling, only 1 quad for char? or 1 unit quad and 2 scale floats?)

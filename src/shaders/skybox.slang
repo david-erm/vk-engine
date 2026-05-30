@@ -26,6 +26,6 @@ VSOutput main(float3 pos, uniform Push push, uint iidx : SV_VulkanInstanceID)
 float4 main(VSOutput input)
 {
     input.local_pos.y = -input.local_pos.y;
-    return cubes[NonUniformResourceIndex(input.index)].Sample(input.local_pos);
+    return cubes[NonUniformResourceIndex(input.index)].Sample(samplers[0], input.local_pos);
 }
 

@@ -52,7 +52,7 @@ float4 main(VSOutput input)
     Material mat = input.mat;
 
     float3 color;
-    color = sampled[NonUniformResourceIndex(mat.albedo)].Sample(input.UV).rgb * input.factor;
+    color = sampled[NonUniformResourceIndex(mat.albedo)].Sample(samplers[0], input.UV).rgb * input.factor;
     return float4(color.rgb * (diffuse + float3(0.1)) + specular, 1.0);
   
 }
