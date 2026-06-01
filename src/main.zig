@@ -23,6 +23,16 @@ const Camera = zkf.Camera;
 const Texture = zkf.Texture;
 const ShaderDataBuffer = zkf.ShaderDataBuffer;
 
+pub fn getShaderModule(device: vk.Device, shader: anytype) !vk.ShaderModule {
+    var module: vk.ShaderModule = undefined;
+    const ci: vk.ShaderModuleCreateInfo = .{
+        .codeSize = shader.spirv.len,
+        .pCode = @ptrCast(&shader.spirv),
+    };
+    try vk.createShaderModule(device, &ci, null, &module);
+    return module;
+}
+
 pub const Scene = extern struct {
     projection: Mat4 = .zero,
     ortho: Mat4 = .zero,
@@ -374,12 +384,8 @@ pub fn main(init: std.process.Init) !void {
         try vk.createPipelineLayout(ctx.device, &ci, null, &pipeline_layout);
     }
 
-    var blinn_module: vk.ShaderModule = undefined;
+    const blinn_module = try getShaderModule(ctx.device, shaders.shader);
     defer vk.destroyShaderModule(ctx.device, blinn_module, null);
-    {
-        const module_ci: vk.ShaderModuleCreateInfo = .{ .pCode = @ptrCast(&shaders.shader.spirv), .codeSize = shaders.shader.spirv.len };
-        try vk.createShaderModule(ctx.device, &module_ci, null, &blinn_module);
-    }
 
     var pipeline: vk.Pipeline = undefined;
     defer vk.destroyPipeline(ctx.device, pipeline, null);
@@ -431,15 +437,8 @@ pub fn main(init: std.process.Init) !void {
         try vk.createGraphicsPipelines(ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&pipeline));
     }
 
-    var skybox_module: vk.ShaderModule = undefined;
+    const skybox_module = try getShaderModule(ctx.device, shaders.skybox);
     defer vk.destroyShaderModule(ctx.device, skybox_module, null);
-    {
-        const ci: vk.ShaderModuleCreateInfo = .{
-            .codeSize = shaders.skybox.spirv.len,
-            .pCode = @ptrCast(&shaders.skybox.spirv),
-        };
-        try vk.createShaderModule(ctx.device, &ci, null, &skybox_module);
-    }
 
     var skybox_pipeline: vk.Pipeline = undefined;
     defer vk.destroyPipeline(ctx.device, skybox_pipeline, null);
@@ -488,15 +487,8 @@ pub fn main(init: std.process.Init) !void {
         try vk.createGraphicsPipelines(ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&skybox_pipeline));
     }
 
-    var text_module: vk.ShaderModule = undefined;
+    const text_module = try getShaderModule(ctx.device, shaders.text);
     defer vk.destroyShaderModule(ctx.device, text_module, null);
-    {
-        const ci: vk.ShaderModuleCreateInfo = .{
-            .codeSize = shaders.text.spirv.len,
-            .pCode = @ptrCast(&shaders.text.spirv),
-        };
-        try vk.createShaderModule(ctx.device, &ci, null, &text_module);
-    }
 
     var text_pipeline: vk.Pipeline = undefined;
     defer vk.destroyPipeline(ctx.device, text_pipeline, null);
@@ -551,6 +543,40 @@ pub fn main(init: std.process.Init) !void {
         try vk.createGraphicsPipelines(ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&text_pipeline));
     }
 
+    const pbr_module = try getShaderModule(ctx.device, shaders.pbr);
+    defer vk.destroyShaderModule(ctx.device, pbr_module, null);
+
+    var pbr_pipeline: vk.Pipeline = undefined;
+    defer vk.destroyPipeline(ctx.device, pbr_pipeline, null);
+    {
+        const stages: [2]vk.PipelineShaderStageCreateInfo = .{
+            .{ .module = pbr_module, .pName = "main", .stage = .{ .vertex = true } },
+            .{ .module = pbr_module, .pName = "main", .stage = .{ .fragment = true } },
+        };
+        const render_ci: vk.PipelineRenderingCreateInfo = .{
+            .colorAttachmentCount = 1,
+            .pColorAttachmentFormats = @ptrCast(&rctx.sc_format),
+            .depthAttachmentFormat = .d32_sfloat_s8_uint,
+        };
+        const blend_attachment: vk.PipelineColorBlendAttachmentState = .{ .colorWriteMask = @bitCast(@as(u32, 0xF)) };
+        const ci: vk.GraphicsPipelineCreateInfo = .{
+            .pNext = &render_ci,
+            .stageCount = stages.len,
+            .pStages = &stages,
+            .pVertexInputState = null,
+            .pInputAssemblyState = &.{ .topology = .triangle_list },
+            .pViewportState = &.{ .viewportCount = 1, .scissorCount = 1 },
+            .pRasterizationState = &.{ .lineWidth = 1.0, .polygonMode = .fill, .cullMode = .{} },
+            .pMultisampleState = &.{ .rasterizationSamples = .{ .@"1" = true } },
+            .pDepthStencilState = &.{ .depthTestEnable = .True, .depthCompareOp = .less_or_equal, .depthWriteEnable = .True },
+            .pColorBlendState = &.{ .attachmentCount = 1, .pAttachments = @ptrCast(&blend_attachment) },
+            .pDynamicState = &.{ .dynamicStateCount = 2, .pDynamicStates = &.{ .viewport, .scissor } },
+            .layout = pipeline_layout,
+        };
+
+        try vk.createGraphicsPipelines(ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&pbr_pipeline));
+    }
+
     var post_layout: vk.PipelineLayout = undefined;
     defer vk.destroyPipelineLayout(ctx.device, post_layout, null);
     {
@@ -563,15 +589,8 @@ pub fn main(init: std.process.Init) !void {
         try vk.createPipelineLayout(ctx.device, &ci, null, &post_layout);
     }
 
-    var box_module: vk.ShaderModule = undefined;
+    const box_module = try getShaderModule(ctx.device, shaders.box);
     defer vk.destroyShaderModule(ctx.device, box_module, null);
-    {
-        const ci: vk.ShaderModuleCreateInfo = .{
-            .codeSize = shaders.box.spirv.len,
-            .pCode = @ptrCast(&shaders.box.spirv),
-        };
-        try vk.createShaderModule(ctx.device, &ci, null, &box_module);
-    }
 
     var boxblur_pipeline: vk.Pipeline = undefined;
     defer vk.destroyPipeline(ctx.device, boxblur_pipeline, null);
@@ -814,6 +833,7 @@ pub fn main(init: std.process.Init) !void {
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&scene_buffer[fif_index].address(ctx.device)));
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 8, 8, @ptrCast(&poses_buffer[fif_index].address(ctx.device)));
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 16, 8, @ptrCast(&mat_buf[fif_index].address(ctx.device)));
+                vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 24, 8, @ptrCast(&asset.vertices.address(ctx.device)));
 
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&suzanne_buffer.handle), &.{0});
                 vk.cmdBindIndexBuffer(cb, suzanne_buffer.handle, vBufferSize, .uint32);
@@ -823,7 +843,7 @@ pub fn main(init: std.process.Init) !void {
                 vk.cmdBindIndexBuffer(cb, plane_buffer.handle, @sizeOf(f32) * plane_vertices.len, .uint16);
                 vk.cmdDrawIndexed(cb, @intCast(quad_indices.len), 1, 0, 0, 3);
 
-                vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&asset.vertices.handle), &.{0});
+                vk.cmdBindPipeline(cb, .graphics, pbr_pipeline);
                 vk.cmdBindIndexBuffer(cb, asset.indices.handle, 0, .uint16);
                 vk.cmdDrawIndexed(cb, @intCast(helm.mesh.index_count), 1, 0, 0, 4);
 

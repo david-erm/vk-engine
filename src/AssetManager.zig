@@ -144,8 +144,7 @@ pub fn init(ctx: Context, gpa: std.mem.Allocator) !AssetManager {
 
     const vertex_ci: vk.BufferCreateInfo = .{
         .size = limits.vertex_buffer_size,
-        //TODO:
-        .usage = .{ .shader_device_address = true, .vertex_buffer = true },
+        .usage = .{ .shader_device_address = true },
     };
     out.vertices = try .init(ctx.vka, vertex_ci, .mapped_vram);
     try vk.nameHandle(ctx.device, out.vertices.handle, "Vertices Buffer");
@@ -373,6 +372,7 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
     defer gpa.free(views);
     for (model.data.buffer_views, views) |buf_view, *view| {
         const bin = bins[buf_view.buffer];
+        std.debug.assert(buf_view.byte_stride == null);
         view.* = bin.memory[buf_view.byte_offset .. buf_view.byte_offset + buf_view.byte_length];
     }
 
@@ -413,17 +413,26 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
 
             out.mesh.index_count = @intCast(indices.count);
 
-            const pos_view: []const zkf.Vec3 = @ptrCast(@alignCast(views[positions.buffer_view.?]));
-            const norm_view: []const zkf.Vec3 = @ptrCast(@alignCast(views[normals.buffer_view.?]));
-            const tex_view: []const zkf.Vec2 = @ptrCast(@alignCast(views[texcoords.buffer_view.?]));
+            const pos_view: []const zkf.Vec3 = @ptrCast(@alignCast(views[positions.buffer_view.?][positions.byte_offset..]));
+            const norm_view: []const zkf.Vec3 = @ptrCast(@alignCast(views[normals.buffer_view.?][normals.byte_offset..]));
+            const tex_view: []const zkf.Vec2 = @ptrCast(@alignCast(views[texcoords.buffer_view.?][texcoords.byte_offset..]));
             for (0..positions.count) |i| {
                 const pos_temp = pos_view[i].mul(scale);
-                manager.vertices.write(manager.vert_offset, pos_temp);
-                manager.vert_offset += @sizeOf(zkf.Vec3);
-                manager.vertices.write(manager.vert_offset, norm_view[i]);
-                manager.vert_offset += @sizeOf(zkf.Vec3);
-                manager.vertices.write(manager.vert_offset, tex_view[i]);
-                manager.vert_offset += @sizeOf(zkf.Vec2);
+                const Vertex = struct {
+                    pos: zkf.Vec3,
+                    u: f32,
+                    norm: zkf.Vec3,
+                    v: f32,
+                };
+                const w: Vertex = .{
+                    .pos = pos_temp,
+                    .u = tex_view[i].x,
+                    .norm = norm_view[i],
+                    .v = tex_view[i].y,
+                };
+
+                manager.vertices.write(manager.vert_offset, w);
+                manager.vert_offset += @sizeOf(Vertex);
             }
 
             log.debug("{}", .{positions});

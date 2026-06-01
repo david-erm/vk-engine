@@ -15,6 +15,7 @@ struct VSOut {
 VSOut main(uniform Push push, uint vid : SV_VulkanVertexID, uint iid : SV_VulkanInstanceID) {
     VSOut output;
     Vertex v = push.vertices[vid];
+    float2 uv = float2(v.u, v.v);
 
     Pose pose = push.poses[iid];
     Pose cam = push.scene.cam;
@@ -27,7 +28,7 @@ VSOut main(uniform Push push, uint vid : SV_VulkanVertexID, uint iid : SV_Vulkan
     output.ViewVec  = -fragPos;
 
     output.mat = push.materials[iid];
-    output.UV = v.tex;
+    output.UV = uv;
     
     return output;
 
@@ -35,5 +36,6 @@ VSOut main(uniform Push push, uint vid : SV_VulkanVertexID, uint iid : SV_Vulkan
 
 [shader("fragment")]
 float4 main(VSOut input) {
-  
+    float4 albedo = sampled[input.mat.albedo].Sample(samplers[0], input.UV);
+    return albedo; 
 }

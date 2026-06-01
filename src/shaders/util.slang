@@ -15,8 +15,10 @@ public struct Pose {
 
 public struct Vertex {
     public float3 pos;
+    public float u;
     public float3 norm;
-    public float2 tex; 
+    public float v;
+    // public float2 tex; 
 };
 
 public struct Scene {
