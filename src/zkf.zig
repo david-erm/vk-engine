@@ -107,6 +107,10 @@ pub const Vec3 = extern struct {
         return .{ .x = v1.x + v2.x, .y = v1.y + v2.y, .z = v1.z + v2.z };
     }
 
+    pub fn mul(v1: Vec3, v2: Vec3) Vec3 {
+        return .{ .x = v1.x * v2.x, .y = v1.y * v2.y, .z = v1.z * v2.z };
+    }
+
     pub fn scale(v: Vec3, factor: f32) Vec3 {
         return .{ .x = v.x * factor, .y = v.y * factor, .z = v.z * factor };
     }

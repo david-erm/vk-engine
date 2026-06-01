@@ -25,8 +25,12 @@ pub const ImageR = struct {
 };
 
 //resources
-
 images: ObjectPool(ImageR),
+
+vertices: Buffer,
+vert_offset: u64,
+indices: Buffer,
+idx_offset: u64,
 
 //Descriptors stuff
 sampled: ObjectPool(vk.ImageView),
@@ -46,8 +50,11 @@ pub const Limits = struct {
     sampled_image: u32 = 0,
     storage_image: u32 = 0,
     sampler: u32 = 0,
+
+    vertex_buffer_size: u64 = 0,
+    index_buffer_size: u64 = 0,
 };
-const limits: Limits = .{ .sampled_image = 1000, .storage_image = 100, .sampler = 24 };
+const limits: Limits = .{ .sampled_image = 1000, .storage_image = 100, .sampler = 24, .vertex_buffer_size = 1 << 22, .index_buffer_size = 1 << 18 };
 
 pub fn init(ctx: Context, gpa: std.mem.Allocator) !AssetManager {
     var out: AssetManager = undefined;
@@ -61,6 +68,7 @@ pub fn init(ctx: Context, gpa: std.mem.Allocator) !AssetManager {
     const semaphore_ci: vk.SemaphoreCreateInfo = .{ .pNext = &semaphore_type };
     try vk.createSemaphore(ctx.device, &semaphore_ci, null, &out.upload_semaphore);
 
+    //descriptor stuff
     const desc_bind_flags: vk.DescriptorSetLayoutBindingFlagsCreateInfo = .{
         .pBindingFlags = &@as([3]vk.DescriptorBindingFlags, @splat(.{ .partially_bound = true, .update_unused_while_pending = false })),
         .bindingCount = 3,
@@ -134,6 +142,22 @@ pub fn init(ctx: Context, gpa: std.mem.Allocator) !AssetManager {
     };
     vk.updateDescriptorSets(ctx.device, 1, @ptrCast(&sampler_write), 0, undefined);
 
+    const vertex_ci: vk.BufferCreateInfo = .{
+        .size = limits.vertex_buffer_size,
+        //TODO:
+        .usage = .{ .shader_device_address = true, .vertex_buffer = true },
+    };
+    out.vertices = try .init(ctx.vka, vertex_ci, .mapped_vram);
+    try vk.nameHandle(ctx.device, out.vertices.handle, "Vertices Buffer");
+    out.vert_offset = 0;
+    const index_ci: vk.BufferCreateInfo = .{
+        .size = limits.index_buffer_size,
+        .usage = .{ .index_buffer = true },
+    };
+    out.indices = try .init(ctx.vka, index_ci, .mapped_vram);
+    try vk.nameHandle(ctx.device, out.indices.handle, "Indices Buffer");
+    out.idx_offset = 0;
+
     return out;
 }
 
@@ -144,6 +168,9 @@ pub fn deinit(manager: *AssetManager, ctx: Context, gpa: std.mem.Allocator) void
 
     const sampler = manager.samplers.get(0);
     vk.destroySampler(ctx.device, sampler, null);
+
+    manager.vertices.deinit(ctx.vka);
+    manager.indices.deinit(ctx.vka);
 
     manager.images.deinit(gpa);
     manager.sampled.deinit(gpa);
@@ -243,8 +270,6 @@ pub fn loadTexture(manager: *AssetManager, ctx: *const Context, gpa: std.mem.All
     const texread_barrier: vk.ImageMemoryBarrier2 = .{
         .srcStageMask = .{ .all_transfer = true },
         .srcAccessMask = .{ .transfer_write = true },
-        // .dstStageMask = .{ .fragment_shader = true },
-        // .dstAccessMask = .{ .shader_read = true },
         .oldLayout = .transfer_dst_optimal,
         .newLayout = .read_only_optimal,
         .image = image,
@@ -305,39 +330,110 @@ pub const Material = extern struct {
     occlusion: ViewHandle,
     emissive: ViewHandle,
 };
-pub const Model = struct {};
+pub const Model = struct {
+    material: Material,
+    images: [5]ImageHandle,
+    mesh: Mesh,
+    pose: zkf.Pose,
+};
 
-pub fn loadGltf(manager: *AssetManager, ctx: Context, io: Io, gpa: std.mem.Allocator, cp: vk.CommandPool, path: []const u8) !Material {
-    log.debug("load model {q}", .{path});
+pub const Mesh = extern struct {
+    start_index: u32 = 0,
+    index_count: u32 = 0,
+    start_vertex: u32 = 0,
+};
+
+pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.mem.Allocator, cp: vk.CommandPool, path: []const u8) !Model {
+    _ = ctx;
+    _ = cp;
+    log.debug("Loading {q}", .{path});
+
+    var out: Model = undefined;
+
     var model = gltf.init(gpa);
     defer model.deinit();
-    const dir = Io.Dir.path.dirname(path) orelse ".";
+    const dir = try Io.Dir.openDir(.cwd(), io, Io.Dir.path.dirname(path) orelse ".", .{});
     const buffer = try Io.Dir.cwd().readFileAllocOptions(io, path, gpa, .unlimited, .@"4", null);
     defer gpa.free(buffer);
     try model.parse(buffer);
-    const mat = model.data.materials[0];
 
-    const albedo = mat.metallic_roughness.base_color_texture orelse return error.MissingTexture;
-    const metallic_roughness = mat.metallic_roughness.metallic_roughness_texture orelse return error.MissingTexture;
-    const normal = mat.normal_texture orelse return error.MissingTexture;
-    const occlusion = mat.occlusion_texture orelse return error.MissingTexture;
-    const emissive = mat.emissive_texture orelse return error.MissingTexture;
+    const bins: []Io.File.MemoryMap = try gpa.alloc(Io.File.MemoryMap, model.data.buffers.len);
+    defer gpa.free(bins);
 
-    const emissive_handle = try manager.loadTexture(ctx, gpa, cp, try makePath(&model.data, emissive, dir));
-    const occlusion_handle = try manager.loadTexture(ctx, gpa, cp, try makePath(&model.data, occlusion, dir));
-    const normal_handle = try manager.loadTexture(ctx, gpa, cp, try makePath(&model.data, normal, dir));
-    const metallic_roughness_handle = try manager.loadTexture(ctx, gpa, cp, try makePath(&model.data, metallic_roughness, dir));
-    const albedo_handle = try manager.loadTexture(ctx, gpa, cp, try makePath(&model.data, albedo, dir));
-
-    return .{
-        .albedo = albedo_handle.sampled,
-        .metallic_roughness = metallic_roughness_handle.sampled,
-        .normal = normal_handle.sampled,
-        .emissive = emissive_handle.sampled,
-        .occlusion = occlusion_handle.sampled,
+    for (model.data.buffers, bins) |buf, *bin| {
+        const file = try dir.openFile(io, buf.uri.?, .{ .mode = .read_write });
+        bin.* = try file.createMemoryMap(io, .{ .len = buf.byte_length });
+    }
+    defer for (bins) |*bin| {
+        bin.file.close(io);
+        bin.destroy(io);
     };
+
+    const views: [][]const u8 = try gpa.alloc([]const u8, model.data.buffer_views.len);
+    defer gpa.free(views);
+    for (model.data.buffer_views, views) |buf_view, *view| {
+        const bin = bins[buf_view.buffer];
+        view.* = bin.memory[buf_view.byte_offset .. buf_view.byte_offset + buf_view.byte_length];
+    }
+
+    for (model.data.nodes) |node| {
+        const scale_temp: zkf.Vec3 = @bitCast(node.scale);
+        const scale = scale_temp.mul(.{ .x = 1, .y = -1, .z = -1 });
+        const mesh_idx = node.mesh orelse return error.NoMesh;
+        const mesh = model.data.meshes[mesh_idx];
+        var mesh_out: Mesh = .{};
+
+        out.pose = .{
+            .pos = @bitCast(node.translation),
+            .rot = @bitCast(node.rotation),
+        };
+
+        for (mesh.primitives) |primitive| {
+            const indices = model.data.accessors[primitive.indices orelse return error.NoIndices];
+            const material = model.data.materials[primitive.material orelse return error.NoMaterial];
+            mesh_out.index_count = @intCast(indices.count);
+
+            _ = material;
+            var positions: gltf.Accessor = undefined;
+            var normals: gltf.Accessor = undefined;
+            var texcoords: gltf.Accessor = undefined;
+            for (primitive.attributes) |attr| {
+                switch (attr) {
+                    .position => |val| positions = model.data.accessors[val],
+                    .normal => |val| normals = model.data.accessors[val],
+                    .texcoord => |val| texcoords = model.data.accessors[val],
+                    else => {
+                        log.debug("not used: {t}", .{attr});
+                    },
+                }
+            }
+
+            manager.indices.write(manager.idx_offset, views[indices.buffer_view.?]);
+            manager.idx_offset += views[indices.buffer_view.?].len;
+
+            out.mesh.index_count = @intCast(indices.count);
+
+            const pos_view: []const zkf.Vec3 = @ptrCast(@alignCast(views[positions.buffer_view.?]));
+            const norm_view: []const zkf.Vec3 = @ptrCast(@alignCast(views[normals.buffer_view.?]));
+            const tex_view: []const zkf.Vec2 = @ptrCast(@alignCast(views[texcoords.buffer_view.?]));
+            for (0..positions.count) |i| {
+                const pos_temp = pos_view[i].mul(scale);
+                manager.vertices.write(manager.vert_offset, pos_temp);
+                manager.vert_offset += @sizeOf(zkf.Vec3);
+                manager.vertices.write(manager.vert_offset, norm_view[i]);
+                manager.vert_offset += @sizeOf(zkf.Vec3);
+                manager.vertices.write(manager.vert_offset, tex_view[i]);
+                manager.vert_offset += @sizeOf(zkf.Vec2);
+            }
+
+            log.debug("{}", .{positions});
+        }
+    }
+
+    return out;
 }
 
+//TODO:
 pub fn transferToImage(manager: *AssetManager, target: ImageHandle, buffer: vk.Buffer, regions: []vk.BufferImageCopy, level_count: u32, layer_count: u32) void {
     const image = manager.getImage(target);
 
@@ -448,28 +544,9 @@ pub fn getStorageImage(manager: *AssetManager, handle: ViewHandle) vk.ImageView 
     return manager.storage.get(@intFromEnum(handle));
 }
 
-inline fn makePath(data: *const gltf.Data, info: anytype, dir: []const u8) ![:0]const u8 {
-    var buf: [512]u8 = undefined;
-    return std.fmt.bufPrintSentinel(&buf, "{s}/{s}", .{ dir, data.images[info.index].uri.? }, 0);
-}
-
-pub fn popImage(manager: *AssetManager, ctx: Context, handle: ImageHandle) void {
-    const idx = @intFromEnum(handle);
-    const image = manager.images.pool[idx].val;
-    manager.images.pop(idx);
-    vma.destroyImage(ctx.vka, image.handle, image.allocation);
-}
-
-pub fn popView(manager: *AssetManager, ctx: Context, handle: ViewHandle) void {
-    const idx = @intFromEnum(handle);
-    const view = manager.sampled.pool[idx].val;
-    manager.sampled.pop(idx);
-    vk.destroyImageView(ctx.device, view, null);
-}
-
-pub fn popHate(manager: *AssetManager, ctx: Context, hate: Hate) void {
-    manager.popImage(ctx, hate.image);
-    manager.popView(ctx, hate.sampled);
+pub fn popHate(manager: *AssetManager, ctx: *const Context, hate: Hate) void {
+    manager.freeImage(ctx, hate.image);
+    manager.freeSampledImage(ctx, hate.sampled);
 }
 
 pub fn loadLevel() void {}

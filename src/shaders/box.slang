@@ -7,7 +7,7 @@ struct Push {
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void main(uint2 id : SV_DispatchThreadID, uniform Push push) {
+void main(uint2 id : SV_DispatchThreadID, uniform Push push ) {
     RWTexture2D image = images[push.image_index];
     // float3 fwid = wid;
     // float2 fid = id;

@@ -13,6 +13,12 @@ public struct Pose {
     public float4 rot;
 };
 
+public struct Vertex {
+    public float3 pos;
+    public float3 norm;
+    public float2 tex; 
+};
+
 public struct Scene {
     public float4x4 projection;
     public float4x4 ortho;
@@ -26,6 +32,7 @@ public struct Push {
     public Scene* scene; 
     public Pose* poses;
     public Material* materials;
+    public Vertex* vertices;
 };
 
 //Quat operations
@@ -44,6 +51,4 @@ public float3 rotate(float3 v, float4 q) {
     float4 vq = float4(v, 0);
     return qmul(qmul(q, vq), conj(q)).xyz;
 }
-
-//Struct definitions
 

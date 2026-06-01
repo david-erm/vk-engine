@@ -101,14 +101,6 @@ pub fn main(init: std.process.Init) !void {
     suzanne_buffer.write(0, suzanne.vertices.items);
     suzanne_buffer.write(vBufferSize, suzanne.indices.items);
 
-    const plane_buffer = try zkf.Buffer.init(ctx.vka, .{
-        .size = @sizeOf(f32) * plane_vertices.len + @sizeOf(u32) * quad_indices.len,
-        .usage = .{ .index_buffer = true, .vertex_buffer = true },
-    }, .mapped_vram);
-    defer plane_buffer.deinit(ctx.vka);
-    plane_buffer.write(0, plane_vertices);
-    plane_buffer.write(@sizeOf(f32) * plane_vertices.len, quad_indices);
-
     const cube_buffer = try zkf.Buffer.init(ctx.vka, .{
         .size = @sizeOf(Vertex) * cube.vertices.items.len + @sizeOf(u32) * cube.indices.items.len,
         .usage = .{ .index_buffer = true, .vertex_buffer = true },
@@ -116,6 +108,14 @@ pub fn main(init: std.process.Init) !void {
     defer cube_buffer.deinit(ctx.vka);
     cube_buffer.write(0, cube.vertices.items);
     cube_buffer.write(@sizeOf(Vertex) * cube.vertices.items.len, cube.indices.items);
+
+    const plane_buffer = try zkf.Buffer.init(ctx.vka, .{
+        .size = @sizeOf(f32) * plane_vertices.len + @sizeOf(u32) * quad_indices.len,
+        .usage = .{ .index_buffer = true, .vertex_buffer = true },
+    }, .mapped_vram);
+    defer plane_buffer.deinit(ctx.vka);
+    plane_buffer.write(0, plane_vertices);
+    plane_buffer.write(@sizeOf(f32) * plane_vertices.len, quad_indices);
 
     const quad_size = @sizeOf(f32) * 6 * 4;
     const text_quad = try zkf.Buffer.init(ctx.vka, .{
@@ -127,18 +127,21 @@ pub fn main(init: std.process.Init) !void {
     //textures
 
     //loading scene
-    // const helm = try asset.loadGltf(ctx, io, gpa, commandPool, "assets/helm/DamagedHelmet.gltf");
+    const helm = try asset.loadGltf(&ctx, io, gpa, commandPool, "assets/helm/DamagedHelmet.gltf");
     // defer {
-    //     asset.popView(ctx, helm.albedo);
-    //     asset.popView(ctx, helm.metallic_roughness);
-    //     asset.popView(ctx, helm.normal);
-    //     asset.popView(ctx, helm.occlusion);
-    //     asset.popView(ctx, helm.emissive);
+    //     asset.freeSampledImage(&ctx, helm.material.albedo);
+    //     asset.freeSampledImage(&ctx, helm.material.metallic_roughness);
+    //     asset.freeSampledImage(&ctx, helm.material.normal);
+    //     asset.freeSampledImage(&ctx, helm.material.occlusion);
+    //     asset.freeSampledImage(&ctx, helm.material.emissive);
+    //     for (helm.images) |image| {
+    //         asset.freeImage(&ctx, image);
+    //     }
     // }
 
     var handles: [3]zkf.AssetManager.Hate = undefined;
     defer for (handles) |handle| {
-        asset.popHate(ctx, handle);
+        asset.popHate(&ctx, handle);
     };
     for (0..3) |i| {
         var buf: [128]u8 = @splat(0);
@@ -147,7 +150,10 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const handle2 = try asset.loadTexture(&ctx, gpa, commandPool, "assets/skybox.ktx2");
-    defer asset.popHate(ctx, handle2);
+    defer asset.popHate(&ctx, handle2);
+
+    const helm_tex = try asset.loadTexture(&ctx, gpa, commandPool, "assets/helm/albedo.ktx2");
+    defer asset.popHate(&ctx, helm_tex);
 
     //fonts
     var ft: c.FT_Library = undefined;
@@ -413,7 +419,8 @@ pub fn main(init: std.process.Init) !void {
             .pVertexInputState = &vertex_input,
             .pInputAssemblyState = &.{ .topology = .triangle_list },
             .pViewportState = &.{ .viewportCount = 1, .scissorCount = 1 },
-            .pRasterizationState = &.{ .lineWidth = 1.0, .polygonMode = .fill, .cullMode = .{ .back = true } },
+            //NOTE: idk
+            .pRasterizationState = &.{ .lineWidth = 1.0, .polygonMode = .fill, .cullMode = .{ .back = false } },
             .pMultisampleState = &.{ .rasterizationSamples = .{ .@"1" = true } },
             .pDepthStencilState = &.{ .depthTestEnable = .True, .depthWriteEnable = .True, .depthCompareOp = .less_or_equal },
             .pColorBlendState = &.{ .attachmentCount = 1, .pAttachments = @ptrCast(&blend_attachment) },
@@ -730,11 +737,13 @@ pub fn main(init: std.process.Init) !void {
             poses[i].rot = poses[i].rot.mul(.fromAngleAxis(std.math.pi * 0.5 * dT, lookup[i])).normalize();
             mats[i].albedo = handles[i].sampled;
         }
+        poses[4] = helm.pose;
         poses_buffer[fif_index].write(0, poses);
         poses_buffer[fif_index].write(4 * @sizeOf(Pose), .{ .pos = .{ .z = -2 } });
 
         scene_buffer[fif_index].write(0, scene);
         mats[3].albedo = handle2.sampled;
+        mats[4].albedo = helm_tex.sampled;
         mat_buf[fif_index].write(0, mats);
 
         const cb: vk.CommandBuffer = command_buffers[fif_index];
@@ -813,6 +822,10 @@ pub fn main(init: std.process.Init) !void {
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&plane_buffer.handle), &.{0});
                 vk.cmdBindIndexBuffer(cb, plane_buffer.handle, @sizeOf(f32) * plane_vertices.len, .uint16);
                 vk.cmdDrawIndexed(cb, @intCast(quad_indices.len), 1, 0, 0, 3);
+
+                vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&asset.vertices.handle), &.{0});
+                vk.cmdBindIndexBuffer(cb, asset.indices.handle, 0, .uint16);
+                vk.cmdDrawIndexed(cb, @intCast(helm.mesh.index_count), 1, 0, 0, 4);
 
                 vk.cmdBindPipeline(cb, .graphics, skybox_pipeline);
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&cube_buffer.handle), &.{0});
