@@ -10,8 +10,15 @@ pub fn build(b: *std.Build) !void {
         return;
     };
     log.info("VulkanSDK at: {s}", .{vulkan_sdk});
-    const vulkan_include = b.fmt("{s}/include", .{vulkan_sdk});
 
+    //system includes
+    const vulkan = b.graph.cwdRelativePath(b.fmt("{s}/include", .{vulkan_sdk}));
+    const freetype = b.graph.cwdRelativePath("/usr/include/freetype2");
+
+    //project include
+    const include = b.path("src/include");
+
+    //dependecies
     const zgltf = b.dependency("zgltf", .{});
 
     const c = b.addTranslateC(.{
@@ -23,11 +30,10 @@ pub fn build(b: *std.Build) !void {
         ),
         .target = target,
         .optimize = optimize,
-        .link_libc = true,
     });
-    c.addIncludePath(.{ .cwd_relative = vulkan_include });
-    c.addIncludePath(b.path("src/include"));
-    c.addSystemIncludePath(.{ .cwd_relative = "/usr/include/freetype2" });
+    c.addIncludePath(include);
+    c.addSystemIncludePath(freetype);
+    c.linkSystemLibrary("freetype", .{});
 
     const cMod = c.createModule();
     cMod.addCSourceFile(.{
@@ -41,11 +47,10 @@ pub fn build(b: *std.Build) !void {
         ),
     });
     cMod.link_libcpp = true;
-    cMod.addIncludePath(.{ .cwd_relative = vulkan_include });
+    cMod.addIncludePath(vulkan);
     cMod.addIncludePath(b.path("src/include"));
     cMod.linkSystemLibrary("SDL3", .{});
     cMod.linkSystemLibrary("ktx", .{});
-    cMod.linkSystemLibrary("freetype", .{});
 
     const vk = b.createModule(.{
         .root_source_file = b.path("src/vk.zig"),

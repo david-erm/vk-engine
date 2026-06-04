@@ -2,7 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 
 pub const c = @import("c");
-const gltf = @import("zgltf").Gltf;
+const Gltf = @import("zgltf").Gltf;
 const vk = @import("vk");
 
 const ktx = @import("ktx.zig");
@@ -61,7 +61,7 @@ pub const Limits = struct {
     vertex_buffer_size: u64 = 0,
     index_buffer_size: u64 = 0,
 };
-const limits: Limits = .{ .sampled_image = 1000, .storage_image = 100, .sampler = 24, .vertex_buffer_size = 1 << 22, .index_buffer_size = 1 << 18 };
+const limits: Limits = .{ .sampled_image = 1000, .storage_image = 100, .sampler = 24, .vertex_buffer_size = 1 << 24, .index_buffer_size = 1 << 22 };
 
 pub fn init(ctx: Context, gpa: std.mem.Allocator) !AssetManager {
     var out: AssetManager = undefined;
@@ -379,37 +379,28 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
 
     var out: Model = undefined;
 
-    var model = gltf.init(gpa);
-    defer model.deinit();
+    var gltf = Gltf.init(gpa);
+    defer gltf.deinit();
     const dir = try Io.Dir.openDir(.cwd(), io, Io.Dir.path.dirname(path) orelse ".", .{});
     const buffer = try Io.Dir.cwd().readFileAllocOptions(io, path, gpa, .unlimited, .@"4", null);
     defer gpa.free(buffer);
-    try model.parse(buffer);
+    try gltf.parse(buffer);
 
-    const bins: [][]align(4) const u8 = try gpa.alloc([]align(4) const u8, model.data.buffers.len);
+    const bins: [][]align(4) const u8 = try gpa.alloc([]align(4) const u8, gltf.data.buffers.len);
     defer gpa.free(bins);
-    for (model.data.buffers, bins) |buf, *bin| {
+    for (gltf.data.buffers, bins) |buf, *bin| {
         bin.* = try dir.readFileAllocOptions(io, buf.uri.?, gpa, .unlimited, .@"4", null);
     }
     defer for (bins) |bin| {
         gpa.free(bin);
     };
 
-    const views: [][]const u8 = try gpa.alloc([]const u8, model.data.buffer_views.len);
-    defer gpa.free(views);
+    for (gltf.data.nodes) |node| {
+        const scale: zkf.Vec3 = @bitCast(node.scale);
+        const gl_to_vulkan = zkf.Vec3{ .x = 1, .y = -1, .z = -1 };
 
-    for (model.data.buffer_views, views) |buf_view, *view| {
-        const bin = bins[buf_view.buffer];
-        log.debug("{}", .{buf_view});
-        std.debug.assert(buf_view.byte_stride == null);
-        view.* = bin[buf_view.byte_offset .. buf_view.byte_offset + buf_view.byte_length];
-    }
-
-    for (model.data.nodes) |node| {
-        const scale_temp: zkf.Vec3 = @bitCast(node.scale);
-        const scale = scale_temp.mul(.{ .x = 1, .y = -1, .z = -1 });
         const mesh_idx = node.mesh orelse return error.NoMesh;
-        const mesh = model.data.meshes[mesh_idx];
+        const mesh = gltf.data.meshes[mesh_idx];
 
         out.pose = .{
             .pos = @bitCast(node.translation),
@@ -422,46 +413,52 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
             out.meshes[i].start_index = @intCast(manager.idx_offset / @sizeOf(u16));
             out.meshes[i].start_vertex = @intCast(manager.vert_offset / @sizeOf(Vertex));
 
-            const material = model.data.materials[primitive.material orelse return error.NoMaterial];
+            const material = gltf.data.materials[primitive.material orelse return error.NoMaterial];
             _ = material;
 
-            const indices = model.data.accessors[primitive.indices orelse return error.NoIndices];
-            std.debug.assert(indices.component_type == .unsigned_short);
+            const indices = gltf.data.accessors[primitive.indices orelse return error.NoIndices];
             out.meshes[i].index_count = @intCast(indices.count);
-            const triangles: []const [3]u16 = @ptrCast(@alignCast(views[indices.buffer_view.?][indices.byte_offset..]));
 
-            //reversing winding order
-            for (triangles) |triangle| {
-                const temp = .{ triangle[2], triangle[1], triangle[0] };
-                manager.indices.write(manager.idx_offset, temp);
+            var indices_it = indices.iterator(u16, &gltf, bins[gltf.data.buffer_views[indices.buffer_view.?].buffer]);
+            for (0..@divExact(indices.count, 3)) |_| {
+                var triangle: [3]u16 = undefined;
+                //reverse winding order
+                triangle[2] = indices_it.next().?[0];
+                triangle[1] = indices_it.next().?[0];
+                triangle[0] = indices_it.next().?[0];
+                manager.indices.write(manager.idx_offset, triangle);
                 manager.idx_offset += @sizeOf([3]u16);
             }
 
-            var positions: gltf.Accessor = undefined;
-            var normals: gltf.Accessor = undefined;
-            var texcoords: gltf.Accessor = undefined;
+            var positions: Gltf.Accessor = undefined;
+            var normals: Gltf.Accessor = undefined;
+            var texcoords: Gltf.Accessor = undefined;
             for (primitive.attributes) |attr| {
                 switch (attr) {
-                    .position => |val| positions = model.data.accessors[val],
-                    .normal => |val| normals = model.data.accessors[val],
-                    .texcoord => |val| texcoords = model.data.accessors[val],
+                    .position => |val| positions = gltf.data.accessors[val],
+                    .normal => |val| normals = gltf.data.accessors[val],
+                    .texcoord => |val| texcoords = gltf.data.accessors[val],
                     else => {
-                        log.debug("not used: {t}", .{attr});
+                        // log.debug("not used: {t}", .{attr});
                     },
                 }
             }
 
-            const pos_view: []const zkf.Vec3 = @ptrCast(@alignCast(views[positions.buffer_view.?][positions.byte_offset..]));
-            const norm_view: []const zkf.Vec3 = @ptrCast(@alignCast(views[normals.buffer_view.?][normals.byte_offset..]));
-            const tex_view: []const zkf.Vec2 = @ptrCast(@alignCast(views[texcoords.buffer_view.?][texcoords.byte_offset..]));
-            for (0..positions.count) |j| {
-                const pos_temp = pos_view[j].mul(scale);
-                const negate = zkf.Vec3{ .x = 1, .y = -1, .z = -1 };
+            var pos_it = positions.iterator(f32, &gltf, bins[gltf.data.buffer_views[positions.buffer_view.?].buffer]);
+            var norm_it = normals.iterator(f32, &gltf, bins[gltf.data.buffer_views[normals.buffer_view.?].buffer]);
+            var tex_it = texcoords.iterator(f32, &gltf, bins[gltf.data.buffer_views[texcoords.buffer_view.?].buffer]);
+            for (0..positions.count) |_| {
+                const pos: *const zkf.Vec3 = @ptrCast(@alignCast(pos_it.next().?.ptr));
+                const norm: *const zkf.Vec3 = @ptrCast(@alignCast(norm_it.next().?.ptr));
+                const tex = tex_it.next().?;
+
+                const pos_temp = pos.mul(scale).mul(gl_to_vulkan);
+                const norm_flipped = norm.mul(gl_to_vulkan).normalize();
                 const w: Vertex = .{
                     .pos = pos_temp,
-                    .u = tex_view[j].x,
-                    .norm = norm_view[j].mul(negate),
-                    .v = tex_view[j].y,
+                    .u = tex[0],
+                    .norm = norm_flipped,
+                    .v = tex[1],
                 };
 
                 manager.vertices.write(manager.vert_offset, w);

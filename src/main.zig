@@ -50,13 +50,12 @@ const Glyph = struct {
 };
 var charmap: std.AutoHashMapUnmanaged(u21, Glyph) = .empty;
 
-const Thingies = struct {
-    model_idx: usize,
-    position: Vec3,
+const RenderInfo = struct {
+    model: u32,
 };
 
 const SceneZon = struct {
-    entities: []const Thingies,
+    entities: []const RenderInfo,
     models: []const []const u8,
     skybox: []const u8,
 };
@@ -110,8 +109,9 @@ pub fn main(init: std.process.Init) !void {
 
     const helm = try asset.loadGltf(&ctx, io, gpa, commandPool, "assets/helm/DamagedHelmet.gltf");
     defer gpa.free(helm.meshes);
-    // const sponza = try asset.loadGltf(&ctx, io, gpa, commandPool, "../zig-graphics/src/assets/glTF-Sample-Assets/Models/Sponza/glTF/Sponza.gltf");
-    // defer gpa.free(sponza.meshes);
+
+    const sponza = try asset.loadGltf(&ctx, io, gpa, commandPool, "../zig-graphics/src/assets/glTF-Sample-Assets/Models/Sponza/glTF/Sponza.gltf");
+    defer gpa.free(sponza.meshes);
 
     const quad_size = @sizeOf(f32) * 6 * 4;
     const text_quad = try zkf.Buffer.init(ctx.vka, .{
@@ -223,8 +223,6 @@ pub fn main(init: std.process.Init) !void {
         };
         vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
     }
-
-    log.debug("{}", .{face.*.bbox});
 
     for (31..128) |i| {
         if (c.FT_Load_Char(face, i, c.FT_LOAD_RENDER) != 0) {
@@ -519,24 +517,27 @@ pub fn main(init: std.process.Init) !void {
         };
         scene_buffer[i] = try .init(ctx.vka, uBufferCI, .mapped_vram);
     }
+
+    const thing_limit = 100;
     var poses_buffer: [max_frames]zkf.Buffer = undefined;
     defer for (poses_buffer) |buffer| {
         buffer.deinit(ctx.vka);
     };
     for (&poses_buffer) |*buffer| {
         const ci: vk.BufferCreateInfo = .{
-            .size = @sizeOf(Pose) * 5,
+            .size = @sizeOf(Pose) * thing_limit,
             .usage = .{ .shader_device_address = true },
         };
         buffer.* = try .init(ctx.vka, ci, .mapped_vram);
     }
+    const mat_limit = 100;
     var mat_buf: [max_frames]zkf.Buffer = undefined;
     defer for (mat_buf) |buf| {
         buf.deinit(ctx.vka);
     };
     for (&mat_buf) |*buf| {
         const ci: vk.BufferCreateInfo = .{
-            .size = @sizeOf(zkf.AssetManager.Material) * 5,
+            .size = @sizeOf(zkf.AssetManager.Material) * mat_limit,
             .usage = .{ .shader_device_address = true },
         };
         buf.* = try .init(ctx.vka, ci, .mapped_vram);
@@ -555,8 +556,8 @@ pub fn main(init: std.process.Init) !void {
 
     //"game stuff"
     var scene: Scene = .{};
-    var poses: [5]Pose = @splat(.{});
-    var mats: [5]zkf.AssetManager.Material = undefined;
+    var poses: [thing_limit]Pose = @splat(.{});
+    var mats: [mat_limit]zkf.AssetManager.Material = undefined;
     var sel: u32 = 0;
 
     //some stats
@@ -566,6 +567,7 @@ pub fn main(init: std.process.Init) !void {
 
     arena_startup.deinit();
     while (!quit) {
+        //TODO: dont just retain_capacity
         _ = arena_frame.reset(.retain_capacity);
 
         const wait_info: vk.SemaphoreWaitInfo = .{ .semaphoreCount = 1, .pSemaphores = @ptrCast(&rctx.loop_tml), .pValues = &.{signal_val[fif_index]} };
@@ -747,6 +749,10 @@ pub fn main(init: std.process.Init) !void {
                 vk.cmdDrawIndexed(cb, plane.index_count, 1, plane.start_index, plane.start_vertex, 4);
                 vk.cmdDrawIndexed(cb, suzanne_pulled.index_count, 3, suzanne_pulled.start_index, suzanne_pulled.start_vertex, 0);
                 vk.cmdDrawIndexed(cb, helm.meshes[0].index_count, 1, helm.meshes[0].start_index, helm.meshes[0].start_vertex, 4);
+
+                for (sponza.meshes) |mesh| {
+                    vk.cmdDrawIndexed(cb, mesh.index_count, 1, mesh.start_index, mesh.start_vertex, 5);
+                }
 
                 vk.cmdEndDebugUtilsLabelEXT(cb);
 
