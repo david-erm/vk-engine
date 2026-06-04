@@ -9,8 +9,17 @@ public struct Material {
 };
 
 public struct Pose {
-    public float4 pos;
+    public float3 pos;
+    public float extra;
     public float4 rot;
+
+    public float3 transform(float3 input) {
+        return rotate(input, rot) + pos;
+    }
+
+    public float3 toFrame(float3 input) {
+        return rotate(input - pos, conj(rot));
+    }
 };
 
 public struct Vertex {
@@ -18,7 +27,6 @@ public struct Vertex {
     public float u;
     public float3 norm;
     public float v;
-    // public float2 tex; 
 };
 
 public struct Scene {

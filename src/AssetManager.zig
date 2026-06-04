@@ -17,6 +17,13 @@ const log = std.log.scoped(.AssetManager);
 
 const AssetManager = @This();
 
+const Vertex = struct {
+    pos: zkf.Vec3,
+    u: f32,
+    norm: zkf.Vec3,
+    v: f32,
+};
+
 pub const ImageHandle = enum(u32) { _ };
 pub const ViewHandle = enum(u32) { _ };
 pub const ImageR = struct {
@@ -329,17 +336,40 @@ pub const Material = extern struct {
     occlusion: ViewHandle,
     emissive: ViewHandle,
 };
-pub const Model = struct {
-    material: Material,
-    images: [5]ImageHandle,
-    mesh: Mesh,
-    pose: zkf.Pose,
-};
 
 pub const Mesh = extern struct {
     start_index: u32 = 0,
     index_count: u32 = 0,
-    start_vertex: u32 = 0,
+    start_vertex: i32 = 0,
+};
+
+pub const Model = struct {
+    materials: []Material,
+    images: []ImageHandle,
+    meshes: []Mesh,
+    pose: zkf.Pose,
+};
+
+pub const StridedView = struct {
+    const View = @This();
+    buf: []const u8,
+    i: usize,
+    stride: usize,
+
+    pub fn init(bytes: []const u8, stride: usize) View {
+        return .{
+            .buf = bytes,
+            .i = 0,
+            .stride = stride,
+        };
+    }
+
+    pub fn next(T: type, view: View) ?T {
+        if (view.i * (view.stride + @sizeOf(T)) > view.buf.len) return null;
+        const val: T = @bitCast(view.buf[view.i * (view.stride + @sizeOf(T))]);
+        view.i += 1;
+        return val;
+    }
 };
 
 pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.mem.Allocator, cp: vk.CommandPool, path: []const u8) !Model {
@@ -356,24 +386,23 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
     defer gpa.free(buffer);
     try model.parse(buffer);
 
-    const bins: []Io.File.MemoryMap = try gpa.alloc(Io.File.MemoryMap, model.data.buffers.len);
+    const bins: [][]align(4) const u8 = try gpa.alloc([]align(4) const u8, model.data.buffers.len);
     defer gpa.free(bins);
-
     for (model.data.buffers, bins) |buf, *bin| {
-        const file = try dir.openFile(io, buf.uri.?, .{ .mode = .read_write });
-        bin.* = try file.createMemoryMap(io, .{ .len = buf.byte_length });
+        bin.* = try dir.readFileAllocOptions(io, buf.uri.?, gpa, .unlimited, .@"4", null);
     }
-    defer for (bins) |*bin| {
-        bin.file.close(io);
-        bin.destroy(io);
+    defer for (bins) |bin| {
+        gpa.free(bin);
     };
 
     const views: [][]const u8 = try gpa.alloc([]const u8, model.data.buffer_views.len);
     defer gpa.free(views);
+
     for (model.data.buffer_views, views) |buf_view, *view| {
         const bin = bins[buf_view.buffer];
+        log.debug("{}", .{buf_view});
         std.debug.assert(buf_view.byte_stride == null);
-        view.* = bin.memory[buf_view.byte_offset .. buf_view.byte_offset + buf_view.byte_length];
+        view.* = bin[buf_view.byte_offset .. buf_view.byte_offset + buf_view.byte_length];
     }
 
     for (model.data.nodes) |node| {
@@ -381,19 +410,33 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
         const scale = scale_temp.mul(.{ .x = 1, .y = -1, .z = -1 });
         const mesh_idx = node.mesh orelse return error.NoMesh;
         const mesh = model.data.meshes[mesh_idx];
-        var mesh_out: Mesh = .{};
 
         out.pose = .{
             .pos = @bitCast(node.translation),
             .rot = @bitCast(node.rotation),
         };
 
-        for (mesh.primitives) |primitive| {
-            const indices = model.data.accessors[primitive.indices orelse return error.NoIndices];
-            const material = model.data.materials[primitive.material orelse return error.NoMaterial];
-            mesh_out.index_count = @intCast(indices.count);
+        out.meshes = try gpa.alloc(Mesh, mesh.primitives.len);
 
+        for (mesh.primitives, 0..) |primitive, i| {
+            out.meshes[i].start_index = @intCast(manager.idx_offset / @sizeOf(u16));
+            out.meshes[i].start_vertex = @intCast(manager.vert_offset / @sizeOf(Vertex));
+
+            const material = model.data.materials[primitive.material orelse return error.NoMaterial];
             _ = material;
+
+            const indices = model.data.accessors[primitive.indices orelse return error.NoIndices];
+            std.debug.assert(indices.component_type == .unsigned_short);
+            out.meshes[i].index_count = @intCast(indices.count);
+            const triangles: []const [3]u16 = @ptrCast(@alignCast(views[indices.buffer_view.?][indices.byte_offset..]));
+
+            //reversing winding order
+            for (triangles) |triangle| {
+                const temp = .{ triangle[2], triangle[1], triangle[0] };
+                manager.indices.write(manager.idx_offset, temp);
+                manager.idx_offset += @sizeOf([3]u16);
+            }
+
             var positions: gltf.Accessor = undefined;
             var normals: gltf.Accessor = undefined;
             var texcoords: gltf.Accessor = undefined;
@@ -408,38 +451,92 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
                 }
             }
 
-            manager.indices.write(manager.idx_offset, views[indices.buffer_view.?]);
-            manager.idx_offset += views[indices.buffer_view.?].len;
-
-            out.mesh.index_count = @intCast(indices.count);
-
             const pos_view: []const zkf.Vec3 = @ptrCast(@alignCast(views[positions.buffer_view.?][positions.byte_offset..]));
             const norm_view: []const zkf.Vec3 = @ptrCast(@alignCast(views[normals.buffer_view.?][normals.byte_offset..]));
             const tex_view: []const zkf.Vec2 = @ptrCast(@alignCast(views[texcoords.buffer_view.?][texcoords.byte_offset..]));
-            for (0..positions.count) |i| {
-                const pos_temp = pos_view[i].mul(scale);
-                const Vertex = struct {
-                    pos: zkf.Vec3,
-                    u: f32,
-                    norm: zkf.Vec3,
-                    v: f32,
-                };
+            for (0..positions.count) |j| {
+                const pos_temp = pos_view[j].mul(scale);
+                const negate = zkf.Vec3{ .x = 1, .y = -1, .z = -1 };
                 const w: Vertex = .{
                     .pos = pos_temp,
-                    .u = tex_view[i].x,
-                    .norm = norm_view[i],
-                    .v = tex_view[i].y,
+                    .u = tex_view[j].x,
+                    .norm = norm_view[j].mul(negate),
+                    .v = tex_view[j].y,
                 };
 
                 manager.vertices.write(manager.vert_offset, w);
                 manager.vert_offset += @sizeOf(Vertex);
             }
-
-            log.debug("{}", .{positions});
         }
     }
 
     return out;
+}
+
+pub fn loadObj(manager: *AssetManager, arena: std.mem.Allocator, io: *std.Io, path: [*:0]const u8) !Mesh {
+    var attrib: c.tinyobj_attrib_t = undefined;
+    var shapes_num: usize = 0;
+    var shapes: ?[*]c.tinyobj_shape_t = null;
+
+    const vert_start: u32 = @intCast(manager.vert_offset);
+    const idx_start: u32 = @intCast(manager.idx_offset);
+
+    //not doing shi with these
+    var materials_num: usize = 0;
+    var materials: ?[*]c.tinyobj_material_t = null;
+
+    var ctx: zkf.FileDataCtx = .{
+        .io = io,
+        .arena = arena,
+        .mmaps = .empty,
+    };
+
+    const ret = c.tinyobj_parse_obj(&attrib, &shapes, &shapes_num, &materials, &materials_num, path, zkf.get_file_data, &ctx, c.TINYOBJ_FLAG_TRIANGULATE);
+    for (ctx.mmaps.items) |*mmap| {
+        mmap.destroy(io.*);
+    }
+    ctx.mmaps.deinit(ctx.arena);
+    if (ret != 0) @panic("loading obj failed");
+
+    for (0..attrib.num_faces, attrib.faces) |i, face| {
+        const v_start: usize = @intCast(face.v_idx * 3);
+        const vn_start: usize = @intCast(face.vn_idx * 3);
+        const vt_start: usize = @intCast(face.vt_idx * 2);
+
+        const vert: Vertex = .{
+            .pos = .{ .x = attrib.vertices[v_start], .y = -attrib.vertices[v_start + 1], .z = attrib.vertices[v_start + 2] },
+            .u = attrib.texcoords[vt_start],
+            .norm = .{ .x = attrib.normals[vn_start], .y = -attrib.normals[vn_start + 1], .z = attrib.normals[vn_start + 2] },
+            .v = 1.0 - attrib.texcoords[vt_start + 1],
+        };
+        manager.vertices.write(manager.vert_offset, vert);
+        manager.vert_offset += @sizeOf(Vertex);
+        manager.indices.write(manager.idx_offset, @as(u16, @intCast(i)));
+        manager.idx_offset += @sizeOf(u16);
+    }
+    c.tinyobj_attrib_free(&attrib);
+    c.tinyobj_materials_free(materials, materials_num);
+    c.tinyobj_shapes_free(shapes, shapes_num);
+
+    return .{
+        .start_index = idx_start / @sizeOf(u16),
+        .index_count = attrib.num_faces,
+        .start_vertex = @intCast(vert_start / @sizeOf(Vertex)),
+    };
+}
+
+pub fn addMesh(manager: *AssetManager, indices: []const u16, vertices: []const Vertex) Mesh {
+    const mesh: Mesh = .{
+        .start_vertex = @intCast(manager.vert_offset / @sizeOf(Vertex)),
+        .start_index = @intCast(manager.idx_offset / @sizeOf(u16)),
+        .index_count = @intCast(indices.len),
+    };
+    manager.vertices.write(manager.vert_offset, vertices);
+    manager.vert_offset += vertices.len * @sizeOf(Vertex);
+    manager.indices.write(manager.idx_offset, indices);
+    manager.idx_offset += indices.len * @sizeOf(u16);
+
+    return mesh;
 }
 
 //TODO:
@@ -522,6 +619,10 @@ pub fn freeSampledImage(manager: *AssetManager, ctx: *const Context, handle: Vie
     const view = manager.sampled.get(idx);
     vk.destroyImageView(ctx.device, view, null);
     manager.sampled.pop(idx);
+}
+
+pub fn getSampledImage(manager: *AssetManager, handle: ViewHandle) vk.ImageView {
+    return manager.sampled.get(@intFromEnum(handle));
 }
 
 pub fn allocStorageImage(manager: *AssetManager, ctx: *const Context, ci: vk.ImageViewCreateInfo) !ViewHandle {

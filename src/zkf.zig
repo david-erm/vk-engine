@@ -309,13 +309,6 @@ pub const Context = struct {
     }
 };
 
-pub const Image = struct {
-    handle: vk.Image,
-    view: vk.ImageView,
-    allocation: vma.Allocation,
-    format: vk.Format,
-};
-
 pub const RenderContext = struct {
     window: sdl.Window,
     windowsize: vk.Extent2D,
@@ -325,7 +318,9 @@ pub const RenderContext = struct {
     sc_format: vk.Format,
     sc_imgs: []vk.Image,
     sc_img_views: []AssetManager.ViewHandle,
-    depth: Image,
+    depth: AssetManager.ImageHandle,
+    depth_view: AssetManager.ViewHandle,
+    depth_format: vk.Format,
     depth_ci: vk.ImageCreateInfo,
     loop_tml: vk.Semaphore,
     fif_semaphore: []vk.Semaphore,
@@ -345,8 +340,8 @@ pub const RenderContext = struct {
         defer for (rctx.swapchain_semaphore) |semaphore| {
             vk.destroySemaphore(ctx.device, semaphore, null);
         };
-        defer vma.destroyImage(ctx.vka, rctx.depth.handle, rctx.depth.allocation);
-        defer vk.destroyImageView(ctx.device, rctx.depth.view, null);
+        defer manager.freeImage(ctx, rctx.depth);
+        defer manager.freeSampledImage(ctx, rctx.depth_view);
     }
 
     pub fn init(
@@ -444,42 +439,38 @@ pub const RenderContext = struct {
         }
 
         const depth_formats: [2]vk.Format = .{ .d32_sfloat_s8_uint, .d24_unorm_s8_uint };
-        for (depth_formats) |format| {
+        rctx.depth_format = for (depth_formats) |format| {
             var formatProperties: vk.FormatProperties2 = .{ .formatProperties = .{} };
             vk.getPhysicalDeviceFormatProperties2(ctx.pdevice, format, &formatProperties);
             if (formatProperties.formatProperties.optimalTilingFeatures.depth_stencil_attachment) {
-                rctx.depth.format = format;
-                break;
+                break format;
             }
-        }
-        std.debug.assert(rctx.depth.format != vk.Format.undefined);
+        } else return error.DepthFormatNotFound;
 
         rctx.depth_ci = .{
             .extent = .{ .width = rctx.windowsize.width, .height = rctx.windowsize.height, .depth = 1 },
             .arrayLayers = 1,
             .mipLevels = 1,
-            .format = rctx.depth.format,
+            .format = rctx.depth_format,
             .imageType = .@"2d",
             .initialLayout = .undefined,
             .tiling = .optimal,
-            .usage = .{ .depth_stencil_attachment = true },
+            .usage = .{ .depth_stencil_attachment = true, .sampled = true },
             .samples = .{ .@"1" = true },
         };
-
-        const alloc_ci: vma.AllocationCreateInfo = .{ .usage = .auto };
-        try vma.createImage(ctx.vka, &rctx.depth_ci, &alloc_ci, &rctx.depth.handle, &rctx.depth.allocation, null);
+        rctx.depth = try manager.allocImage(ctx, rctx.depth_ci);
 
         const depthImageViewCI: vk.ImageViewCreateInfo = .{
-            .format = rctx.depth.format,
+            .format = rctx.depth_format,
             .viewType = .@"2d",
-            .image = rctx.depth.handle,
+            .image = manager.getImage(rctx.depth),
             .subresourceRange = .{
                 .aspectMask = .{ .depth = true },
                 .layerCount = 1,
                 .levelCount = 1,
             },
         };
-        try vk.createImageView(ctx.device, &depthImageViewCI, null, &rctx.depth.view);
+        rctx.depth_view = try manager.allocSampledImage(ctx, depthImageViewCI);
 
         return rctx;
     }
@@ -489,8 +480,10 @@ pub const RenderContext = struct {
 
         try vk.queueWaitIdle(ctx.queue);
 
+        // not used, dont need to track this
         var surfaceCaps: vk.SurfaceCapabilitiesKHR = undefined;
         try vk.getPhysicalDeviceSurfaceCapabilitiesKHR(ctx.pdevice, rctx.surface, &surfaceCaps);
+
         rctx.swapchain_ci.oldSwapchain = rctx.swapchain;
         rctx.swapchain_ci.imageExtent = rctx.windowsize;
         try vk.createSwapchainKHR(ctx.device, &rctx.swapchain_ci, null, &rctx.swapchain);
@@ -519,19 +512,18 @@ pub const RenderContext = struct {
         }
 
         vk.destroySwapchainKHR(ctx.device, rctx.swapchain_ci.oldSwapchain, null);
-        vma.destroyImage(ctx.vka, rctx.depth.handle, rctx.depth.allocation);
-        vk.destroyImageView(ctx.device, rctx.depth.view, null);
+        manager.freeImage(ctx, rctx.depth);
+        manager.freeSampledImage(ctx, rctx.depth_view);
 
         rctx.depth_ci.extent = .{ .width = rctx.windowsize.width, .height = rctx.windowsize.height, .depth = 1 };
-        const aci: vma.AllocationCreateInfo = .{ .usage = .auto, .flags = .{ .dedicated_memory_bit = true } };
-        try vma.createImage(ctx.vka, &rctx.depth_ci, &aci, &rctx.depth.handle, &rctx.depth.allocation, null);
+        rctx.depth = try manager.allocImage(ctx, rctx.depth_ci);
         const viewCI: vk.ImageViewCreateInfo = .{
-            .image = rctx.depth.handle,
+            .image = manager.getImage(rctx.depth),
             .viewType = .@"2d",
-            .format = rctx.depth.format,
+            .format = rctx.depth_format,
             .subresourceRange = .{ .aspectMask = .{ .depth = true }, .layerCount = 1, .levelCount = 1 },
         };
-        try vk.createImageView(ctx.device, &viewCI, null, &rctx.depth.view);
+        rctx.depth_view = try manager.allocSampledImage(ctx, viewCI);
     }
 };
 
@@ -611,10 +603,9 @@ pub const Buffer = struct {
             .pointer => {
                 @memcpy(@as([*]u8, @ptrCast(@alignCast(buff.alloci.pMappedData.?))) + offset, std.mem.sliceAsBytes(data));
             },
-            .@"struct", .array => {
+            else => {
                 @memcpy(@as([*]u8, @ptrCast(@alignCast(buff.alloci.pMappedData.?))) + offset, std.mem.asBytes(&data));
             },
-            else => @compileError("needs to be either struct or slice"),
         }
     }
 
@@ -685,7 +676,7 @@ pub const Texture = struct {
     sampler: vk.Sampler,
 };
 
-const FileDataCtx = struct {
+pub const FileDataCtx = struct {
     io: *std.Io,
     arena: std.mem.Allocator,
     mmaps: std.ArrayList(std.Io.File.MemoryMap),
@@ -735,7 +726,7 @@ pub fn loadObj(arena: std.mem.Allocator, io: *std.Io, path: [*:0]const u8) !Load
     return .{ .indices = indices, .vertices = vertices };
 }
 
-fn get_file_data(ioparam: ?*anyopaque, filename: [*c]const u8, _: i32, _: ?[*]const u8, buf: ?*?[*]u8, len: ?*usize) callconv(.c) void {
+pub fn get_file_data(ioparam: ?*anyopaque, filename: [*c]const u8, _: i32, _: ?[*]const u8, buf: ?*?[*]u8, len: ?*usize) callconv(.c) void {
     if (filename == null) {
         log.err("bad filename", .{});
         buf.?.* = null;

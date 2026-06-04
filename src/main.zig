@@ -86,6 +86,7 @@ pub fn main(init: std.process.Init) !void {
     var asset: zkf.AssetManager = try .init(ctx, gpa);
     defer asset.deinit(ctx, gpa);
 
+    //TODO: This needs to die
     var rctx: zkf.RenderContext = try .init(&ctx, a_static, 1920, 1080, "testing", max_frames, &asset);
     defer rctx.deinit(&ctx, &asset);
 
@@ -101,31 +102,16 @@ pub fn main(init: std.process.Init) !void {
 
     _ = sdl.setWindowRelativeMouseMode(rctx.window, true);
 
-    const suzanne = try zkf.loadObj(a_static, &io, "assets/suzanne.obj");
-    const cube = try zkf.loadObj(a_static, &io, "assets/cube.obj");
+    //Models
 
-    const vBufferSize: vk.DeviceSize = @sizeOf(Vertex) * suzanne.vertices.items.len;
-    const iBufferSize: vk.DeviceSize = @sizeOf(u32) * suzanne.indices.items.len;
-    const suzanne_buffer = try zkf.Buffer.init(ctx.vka, .{ .size = vBufferSize + iBufferSize, .usage = .{ .index_buffer = true, .vertex_buffer = true } }, .mapped_vram);
-    defer suzanne_buffer.deinit(ctx.vka);
-    suzanne_buffer.write(0, suzanne.vertices.items);
-    suzanne_buffer.write(vBufferSize, suzanne.indices.items);
+    const suzanne_pulled = try asset.loadObj(a_static, &io, "assets/suzanne.obj");
+    const cube = try asset.loadObj(a_static, &io, "assets/cube.obj");
+    const plane = asset.addMesh(&quad_indices, @ptrCast(&plane_vertices));
 
-    const cube_buffer = try zkf.Buffer.init(ctx.vka, .{
-        .size = @sizeOf(Vertex) * cube.vertices.items.len + @sizeOf(u32) * cube.indices.items.len,
-        .usage = .{ .index_buffer = true, .vertex_buffer = true },
-    }, .mapped_vram);
-    defer cube_buffer.deinit(ctx.vka);
-    cube_buffer.write(0, cube.vertices.items);
-    cube_buffer.write(@sizeOf(Vertex) * cube.vertices.items.len, cube.indices.items);
-
-    const plane_buffer = try zkf.Buffer.init(ctx.vka, .{
-        .size = @sizeOf(f32) * plane_vertices.len + @sizeOf(u32) * quad_indices.len,
-        .usage = .{ .index_buffer = true, .vertex_buffer = true },
-    }, .mapped_vram);
-    defer plane_buffer.deinit(ctx.vka);
-    plane_buffer.write(0, plane_vertices);
-    plane_buffer.write(@sizeOf(f32) * plane_vertices.len, quad_indices);
+    const helm = try asset.loadGltf(&ctx, io, gpa, commandPool, "assets/helm/DamagedHelmet.gltf");
+    defer gpa.free(helm.meshes);
+    // const sponza = try asset.loadGltf(&ctx, io, gpa, commandPool, "../zig-graphics/src/assets/glTF-Sample-Assets/Models/Sponza/glTF/Sponza.gltf");
+    // defer gpa.free(sponza.meshes);
 
     const quad_size = @sizeOf(f32) * 6 * 4;
     const text_quad = try zkf.Buffer.init(ctx.vka, .{
@@ -135,19 +121,6 @@ pub fn main(init: std.process.Init) !void {
     defer text_quad.deinit(ctx.vka);
 
     //textures
-
-    //loading scene
-    const helm = try asset.loadGltf(&ctx, io, gpa, commandPool, "assets/helm/DamagedHelmet.gltf");
-    // defer {
-    //     asset.freeSampledImage(&ctx, helm.material.albedo);
-    //     asset.freeSampledImage(&ctx, helm.material.metallic_roughness);
-    //     asset.freeSampledImage(&ctx, helm.material.normal);
-    //     asset.freeSampledImage(&ctx, helm.material.occlusion);
-    //     asset.freeSampledImage(&ctx, helm.material.emissive);
-    //     for (helm.images) |image| {
-    //         asset.freeImage(&ctx, image);
-    //     }
-    // }
 
     var handles: [3]zkf.AssetManager.Hate = undefined;
     defer for (handles) |handle| {
@@ -172,11 +145,12 @@ pub fn main(init: std.process.Init) !void {
         return error.Freetype;
     }
     var face: c.FT_Face = undefined;
-    if (c.FT_New_Face(ft, "/usr/share/fonts/ibm-plex-sans-fonts/IBMPlexSans-Text.otf", 0, &face) != 0) {
+    const font = "/usr/share/fonts/ibm-plex-sans-fonts/IBMPlexSans-Regular.otf";
+    if (c.FT_New_Face(ft, font, 0, &face) != 0) {
         log.info("Failed to init face", .{});
         return error.Face;
     }
-    const font_size = 32;
+    const font_size = 64;
     if (c.FT_Set_Pixel_Sizes(face, 0, font_size) != 0) @panic("");
 
     const atlas_size = 1024;
@@ -250,6 +224,8 @@ pub fn main(init: std.process.Init) !void {
         vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
     }
 
+    log.debug("{}", .{face.*.bbox});
+
     for (31..128) |i| {
         if (c.FT_Load_Char(face, i, c.FT_LOAD_RENDER) != 0) {
             log.info("failed to load {c}", .{@as(u8, @intCast(i))});
@@ -260,6 +236,9 @@ pub fn main(init: std.process.Init) !void {
             space_advance = @floatFromInt(glyph.advance.x >> 6);
             continue;
         }
+
+        // log.debug("{c}: {}", .{ @as(u8, @intCast(i)), glyph.metrics });
+        // log.debug("{s}", .{std.meta.fieldNames(@TypeOf(glyph.metrics))});
 
         var out: Glyph = .{
             .bearing = .{ .x = @floatFromInt(glyph.bitmap_left), .y = @floatFromInt(-glyph.bitmap_top) },
@@ -376,90 +355,19 @@ pub fn main(init: std.process.Init) !void {
     defer vk.destroyPipelineLayout(ctx.device, pipeline_layout, null);
     {
         const ci: vk.PipelineLayoutCreateInfo = .{
-            .pushConstantRangeCount = shaders.shader.push_constant_ranges.len,
-            .pPushConstantRanges = &shaders.shader.push_constant_ranges,
+            .pushConstantRangeCount = shaders.pbr.push_constant_ranges.len,
+            .pPushConstantRanges = &shaders.pbr.push_constant_ranges,
             .setLayoutCount = 1,
             .pSetLayouts = @ptrCast(&asset.descriptor_layout),
         };
         try vk.createPipelineLayout(ctx.device, &ci, null, &pipeline_layout);
     }
 
-    const blinn_module = try getShaderModule(ctx.device, shaders.shader);
-    defer vk.destroyShaderModule(ctx.device, blinn_module, null);
-
-    var pipeline: vk.Pipeline = undefined;
-    defer vk.destroyPipeline(ctx.device, pipeline, null);
-    {
-        //comptime gen vertex input
-        const vertex_bind: vk.VertexInputBindingDescription = .{
-            .binding = 0,
-            .stride = @sizeOf(Vertex),
-            .inputRate = .vertex,
-        };
-        const vertex_attributes: [3]vk.VertexInputAttributeDescription = .{
-            .{ .binding = 0, .format = .r32g32b32_sfloat, .location = 0, .offset = @offsetOf(Vertex, "pos") },
-            .{ .binding = 0, .format = .r32g32b32_sfloat, .location = 1, .offset = @offsetOf(Vertex, "norm") },
-            .{ .binding = 0, .format = .r32g32_sfloat, .location = 2, .offset = @offsetOf(Vertex, "uv") },
-        };
-        const vertex_input: vk.PipelineVertexInputStateCreateInfo = .{
-            .vertexAttributeDescriptionCount = vertex_attributes.len,
-            .pVertexAttributeDescriptions = &vertex_attributes,
-            .vertexBindingDescriptionCount = 1,
-            .pVertexBindingDescriptions = @ptrCast(&vertex_bind),
-        };
-        //pass in shader
-        const shader_stages: [2]vk.PipelineShaderStageCreateInfo = .{
-            .{ .stage = .{ .vertex = true }, .module = blinn_module, .pName = "main" },
-            .{ .stage = .{ .fragment = true }, .module = blinn_module, .pName = "main" },
-        };
-        const render_ci: vk.PipelineRenderingCreateInfo = .{
-            .colorAttachmentCount = 1,
-            .pColorAttachmentFormats = @ptrCast(&rctx.sc_format),
-            .depthAttachmentFormat = rctx.depth.format,
-        };
-        const blend_attachment: vk.PipelineColorBlendAttachmentState = .{ .colorWriteMask = @bitCast(@as(u32, 0xF)) };
-        var ci: vk.GraphicsPipelineCreateInfo = .{
-            .pNext = &render_ci,
-            .stageCount = 2,
-            .pStages = &shader_stages,
-            .pVertexInputState = &vertex_input,
-            .pInputAssemblyState = &.{ .topology = .triangle_list },
-            .pViewportState = &.{ .viewportCount = 1, .scissorCount = 1 },
-            //NOTE: idk
-            .pRasterizationState = &.{ .lineWidth = 1.0, .polygonMode = .fill, .cullMode = .{ .back = false } },
-            .pMultisampleState = &.{ .rasterizationSamples = .{ .@"1" = true } },
-            .pDepthStencilState = &.{ .depthTestEnable = .True, .depthWriteEnable = .True, .depthCompareOp = .less_or_equal },
-            .pColorBlendState = &.{ .attachmentCount = 1, .pAttachments = @ptrCast(&blend_attachment) },
-            .pDynamicState = &.{ .dynamicStateCount = 2, .pDynamicStates = &.{ .viewport, .scissor } },
-            .layout = pipeline_layout,
-        };
-
-        try vk.createGraphicsPipelines(ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&pipeline));
-    }
-
-    const skybox_module = try getShaderModule(ctx.device, shaders.skybox);
-    defer vk.destroyShaderModule(ctx.device, skybox_module, null);
-
     var skybox_pipeline: vk.Pipeline = undefined;
     defer vk.destroyPipeline(ctx.device, skybox_pipeline, null);
     {
-        const bind: vk.VertexInputBindingDescription = .{
-            .binding = 0,
-            .inputRate = .vertex,
-            .stride = @sizeOf(Vertex),
-        };
-        const attribute: vk.VertexInputAttributeDescription = .{
-            .binding = 0,
-            .format = .r32g32b32_sfloat,
-            .location = 0,
-            .offset = 0,
-        };
-        const vci: vk.PipelineVertexInputStateCreateInfo = .{
-            .vertexAttributeDescriptionCount = 1,
-            .pVertexAttributeDescriptions = @ptrCast(&attribute),
-            .vertexBindingDescriptionCount = 1,
-            .pVertexBindingDescriptions = @ptrCast(&bind),
-        };
+        const skybox_module = try getShaderModule(ctx.device, shaders.skybox);
+        defer vk.destroyShaderModule(ctx.device, skybox_module, null);
         const stages: [2]vk.PipelineShaderStageCreateInfo = .{
             .{ .module = skybox_module, .pName = "main", .stage = .{ .vertex = true } },
             .{ .module = skybox_module, .pName = "main", .stage = .{ .fragment = true } },
@@ -467,14 +375,14 @@ pub fn main(init: std.process.Init) !void {
         const render_ci: vk.PipelineRenderingCreateInfo = .{
             .colorAttachmentCount = 1,
             .pColorAttachmentFormats = @ptrCast(&rctx.sc_format),
-            .depthAttachmentFormat = rctx.depth.format,
+            .depthAttachmentFormat = rctx.depth_format,
         };
         const blend_attachment: vk.PipelineColorBlendAttachmentState = .{ .colorWriteMask = @bitCast(@as(u32, 0xF)) };
         var ci: vk.GraphicsPipelineCreateInfo = .{
             .pNext = &render_ci,
             .stageCount = stages.len,
             .pStages = &stages,
-            .pVertexInputState = &vci,
+            .pVertexInputState = &.{},
             .pInputAssemblyState = &.{ .topology = .triangle_list },
             .pViewportState = &.{ .viewportCount = 1, .scissorCount = 1 },
             .pRasterizationState = &.{ .lineWidth = 1.0, .polygonMode = .fill, .cullMode = .{ .front = true } },
@@ -487,12 +395,11 @@ pub fn main(init: std.process.Init) !void {
         try vk.createGraphicsPipelines(ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&skybox_pipeline));
     }
 
-    const text_module = try getShaderModule(ctx.device, shaders.text);
-    defer vk.destroyShaderModule(ctx.device, text_module, null);
-
     var text_pipeline: vk.Pipeline = undefined;
     defer vk.destroyPipeline(ctx.device, text_pipeline, null);
     {
+        const text_module = try getShaderModule(ctx.device, shaders.text);
+        defer vk.destroyShaderModule(ctx.device, text_module, null);
         const bind: vk.VertexInputBindingDescription = .{
             .binding = 0,
             .inputRate = .vertex,
@@ -543,12 +450,11 @@ pub fn main(init: std.process.Init) !void {
         try vk.createGraphicsPipelines(ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&text_pipeline));
     }
 
-    const pbr_module = try getShaderModule(ctx.device, shaders.pbr);
-    defer vk.destroyShaderModule(ctx.device, pbr_module, null);
-
     var pbr_pipeline: vk.Pipeline = undefined;
     defer vk.destroyPipeline(ctx.device, pbr_pipeline, null);
     {
+        const pbr_module = try getShaderModule(ctx.device, shaders.pbr);
+        defer vk.destroyShaderModule(ctx.device, pbr_module, null);
         const stages: [2]vk.PipelineShaderStageCreateInfo = .{
             .{ .module = pbr_module, .pName = "main", .stage = .{ .vertex = true } },
             .{ .module = pbr_module, .pName = "main", .stage = .{ .fragment = true } },
@@ -563,10 +469,10 @@ pub fn main(init: std.process.Init) !void {
             .pNext = &render_ci,
             .stageCount = stages.len,
             .pStages = &stages,
-            .pVertexInputState = null,
+            .pVertexInputState = &.{},
             .pInputAssemblyState = &.{ .topology = .triangle_list },
             .pViewportState = &.{ .viewportCount = 1, .scissorCount = 1 },
-            .pRasterizationState = &.{ .lineWidth = 1.0, .polygonMode = .fill, .cullMode = .{} },
+            .pRasterizationState = &.{ .lineWidth = 1.0, .polygonMode = .fill, .cullMode = .{ .back = true } },
             .pMultisampleState = &.{ .rasterizationSamples = .{ .@"1" = true } },
             .pDepthStencilState = &.{ .depthTestEnable = .True, .depthCompareOp = .less_or_equal, .depthWriteEnable = .True },
             .pColorBlendState = &.{ .attachmentCount = 1, .pAttachments = @ptrCast(&blend_attachment) },
@@ -589,12 +495,11 @@ pub fn main(init: std.process.Init) !void {
         try vk.createPipelineLayout(ctx.device, &ci, null, &post_layout);
     }
 
-    const box_module = try getShaderModule(ctx.device, shaders.box);
-    defer vk.destroyShaderModule(ctx.device, box_module, null);
-
     var boxblur_pipeline: vk.Pipeline = undefined;
     defer vk.destroyPipeline(ctx.device, boxblur_pipeline, null);
     {
+        const box_module = try getShaderModule(ctx.device, shaders.box);
+        defer vk.destroyShaderModule(ctx.device, box_module, null);
         const ci: vk.ComputePipelineCreateInfo = .{
             .layout = post_layout,
             .stage = .{ .stage = .{ .compute = true }, .module = box_module, .pName = "main" },
@@ -602,6 +507,7 @@ pub fn main(init: std.process.Init) !void {
         try vk.createComputePipelines(ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&boxblur_pipeline));
     }
 
+    //TODO: function that adds buffered buffer to asset manager?
     var scene_buffer: [max_frames]zkf.Buffer = undefined;
     defer for (scene_buffer) |buffer| {
         buffer.deinit(ctx.vka);
@@ -671,7 +577,7 @@ pub fn main(init: std.process.Init) !void {
         };
 
         //reduces input latency or smth
-        // try Io.sleep(io, .fromMicroseconds(7000), .real);
+        // try Io.sleep(io, .fromMicroseconds(4000), .real);
 
         const elasped: f32 = @floatFromInt(Io.Clock.now(.real, io).toMicroseconds() - last_time);
         last_time = Io.Clock.now(.real, io).toMicroseconds();
@@ -787,7 +693,7 @@ pub fn main(init: std.process.Init) !void {
                 .dstAccessMask = .{ .depth_stencil_attachment_write = true },
                 .oldLayout = .undefined,
                 .newLayout = .attachment_optimal,
-                .image = rctx.depth.handle,
+                .image = asset.getImage(rctx.depth),
                 .subresourceRange = .{ .aspectMask = .{ .depth = true, .stencil = true }, .levelCount = 1, .layerCount = 1 },
             } };
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 2, .pImageMemoryBarriers = &output_barriers });
@@ -800,7 +706,7 @@ pub fn main(init: std.process.Init) !void {
                 .clearValue = .{ .color = .{ .float32 = .{ 0.0, 0.0, 0.0, 1.0 } } },
             };
             const depth_attach_info: vk.RenderingAttachmentInfo = .{
-                .imageView = rctx.depth.view,
+                .imageView = asset.getSampledImage(rctx.depth_view),
                 .imageLayout = .attachment_optimal,
                 .loadOp = .clear,
                 .storeOp = .dont_care,
@@ -828,34 +734,36 @@ pub fn main(init: std.process.Init) !void {
                 const scissor: vk.Rect2D = .{ .extent = rctx.windowsize };
                 vk.cmdSetScissor(cb, 0, 1, @ptrCast(&scissor));
 
-                vk.cmdBindPipeline(cb, .graphics, pipeline);
+                vk.cmdBindPipeline(cb, .graphics, pbr_pipeline);
+                vk.cmdBindIndexBuffer(cb, asset.indices.handle, 0, .uint16);
                 vk.cmdBindDescriptorSets(cb, .graphics, pipeline_layout, 0, 1, @ptrCast(&asset.descriptor_set), 0, undefined);
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&scene_buffer[fif_index].address(ctx.device)));
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 8, 8, @ptrCast(&poses_buffer[fif_index].address(ctx.device)));
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 16, 8, @ptrCast(&mat_buf[fif_index].address(ctx.device)));
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 24, 8, @ptrCast(&asset.vertices.address(ctx.device)));
 
-                vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&suzanne_buffer.handle), &.{0});
-                vk.cmdBindIndexBuffer(cb, suzanne_buffer.handle, vBufferSize, .uint32);
-                vk.cmdDrawIndexed(cb, @intCast(suzanne.indices.items.len), 3, 0, 0, 0);
+                vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Vertex Pulling" });
 
-                vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&plane_buffer.handle), &.{0});
-                vk.cmdBindIndexBuffer(cb, plane_buffer.handle, @sizeOf(f32) * plane_vertices.len, .uint16);
-                vk.cmdDrawIndexed(cb, @intCast(quad_indices.len), 1, 0, 0, 3);
+                vk.cmdDrawIndexed(cb, plane.index_count, 1, plane.start_index, plane.start_vertex, 4);
+                vk.cmdDrawIndexed(cb, suzanne_pulled.index_count, 3, suzanne_pulled.start_index, suzanne_pulled.start_vertex, 0);
+                vk.cmdDrawIndexed(cb, helm.meshes[0].index_count, 1, helm.meshes[0].start_index, helm.meshes[0].start_vertex, 4);
 
-                vk.cmdBindPipeline(cb, .graphics, pbr_pipeline);
-                vk.cmdBindIndexBuffer(cb, asset.indices.handle, 0, .uint16);
-                vk.cmdDrawIndexed(cb, @intCast(helm.mesh.index_count), 1, 0, 0, 4);
+                vk.cmdEndDebugUtilsLabelEXT(cb);
+
+                vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Skybox" });
 
                 vk.cmdBindPipeline(cb, .graphics, skybox_pipeline);
-                vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&cube_buffer.handle), &.{0});
-                vk.cmdBindIndexBuffer(cb, cube_buffer.handle, @sizeOf(Vertex) * cube.vertices.items.len, .uint32);
-                vk.cmdDrawIndexed(cb, @intCast(cube.indices.items.len), 1, 0, 0, 3);
+                vk.cmdDrawIndexed(cb, cube.index_count, 1, cube.start_index, cube.start_vertex, 3);
+
+                vk.cmdEndDebugUtilsLabelEXT(cb);
+
+                vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Text" });
 
                 vk.cmdBindPipeline(cb, .graphics, text_pipeline);
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&text_quad.handle), &.{0});
                 const text = try std.fmt.allocPrint(a_frame, "frametimeg,: {d:.3}ms±😊", .{elasped / 1000});
 
+                //cant know
                 var pos: Vec2 = .{ .x = mouse_pos.x, .y = mouse_pos.y };
                 const scale: f32 = 1;
                 for (text, 0..) |char, i| {
@@ -868,9 +776,10 @@ pub fn main(init: std.process.Init) !void {
                     const w: f32 = ch.scale.x * scale;
                     const h: f32 = ch.scale.y * scale;
                     const charmod: Vec2 = .{
-                        .x = ch.bearing.x,
-                        .y = ch.scale.y + ch.bearing.y,
+                        .x = ch.bearing.x * scale,
+                        .y = (ch.scale.y + ch.bearing.y) * scale,
                     };
+                    // log.debug("{c}: {}", .{ char, charmod });
                     const vertices = [_]f32{
                         charmod.x + pos.x,     charmod.y + pos.y - h, ch.uv.x,     ch.uv.y,
                         charmod.x + pos.x,     charmod.y + pos.y,     ch.uv.x,     ch.uv_max.y,
@@ -883,8 +792,10 @@ pub fn main(init: std.process.Init) !void {
                     vk.cmdDraw(cb, 6, 1, @intCast(i * 6), 0);
                     pos.x += ch.advance * scale;
                 }
+                vk.cmdEndDebugUtilsLabelEXT(cb);
             }
 
+            vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Post Proccess" });
             vk.cmdBindPipeline(cb, .compute, boxblur_pipeline);
             vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&asset.descriptor_set), 0, undefined);
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 0, 8, @ptrCast(&mouse_pos));
@@ -903,17 +814,7 @@ pub fn main(init: std.process.Init) !void {
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = @ptrCast(&compute_barrier1) });
             vk.cmdDispatch(cb, (rctx.windowsize.width / shaders.box.local_size[0]) + 1, (rctx.windowsize.height / shaders.box.local_size[1]) + 1, 1);
 
-            const compute_barrier2: vk.ImageMemoryBarrier2 = .{
-                .srcStageMask = .{ .compute_shader = true },
-                .srcAccessMask = .{ .shader_storage_write = true },
-                .dstStageMask = .{ .compute_shader = true },
-                .dstAccessMask = .{ .shader_storage_read = true, .shader_storage_write = true },
-                .oldLayout = .general,
-                .newLayout = .general,
-                .image = rctx.sc_imgs[swapchain_index],
-                .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
-            };
-            vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = @ptrCast(&compute_barrier2) });
+            vk.cmdEndDebugUtilsLabelEXT(cb);
 
             const present_barrier: vk.ImageMemoryBarrier2 = .{
                 .srcStageMask = .{ .compute_shader = true },
@@ -979,8 +880,9 @@ const quad_indices: [6]u16 = .{
 };
 
 const plane_vertices: [32]f32 = .{
-    -10.0, 2.0, 10.0,  0.0, 1.0, 0.0, 0.0, 1.0,
-    10.0,  2.0, 10.0,  0.0, 1.0, 0.0, 1.0, 1.0,
-    10.0,  2.0, -10.0, 0.0, 1.0, 0.0, 1.0, 0.0,
-    -10.0, 2.0, -10.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    //pos              u    norm           v
+    -10.0, 2.0, 10.0,  0.0, 0.0, 1.0, 0.0, 1.0,
+    10.0,  2.0, 10.0,  1.0, 0.0, 1.0, 0.0, 1.0,
+    10.0,  2.0, -10.0, 1.0, 0.0, 1.0, 0.0, 0.0,
+    -10.0, 2.0, -10.0, 0.0, 0.0, 1.0, 0.0, 0.0,
 };

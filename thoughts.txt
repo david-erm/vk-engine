@@ -3,6 +3,7 @@
     - maybe i need to allow pfn to be null? if i simply remove the extension funtions stuff will not compile.
 - generate slang structs from zig structs
 - maybe create system to create image view from imageHandle 
+- make POSE lib for shaders
 
 # CHALLENGE:
 - fix the text rendering, make it actually good (Vertex pulling, only 1 quad for char? or 1 unit quad and 2 scale floats?)
@@ -12,6 +13,7 @@
 - finish allocator
 - upload queue for asset thingy # ?
 - program that parses gltf and auto converts their pbr textures to bcn using ktx tools # zig impt when? mr_oven ? 
+- COULD make VkImages reference counted to VkImageViews so explicit tracking is uneeded
 
 # GOAL:
 - start making abstractions

@@ -10,9 +10,11 @@ struct VSOutput {
 
 
 [shader("vertex")]
-VSOutput main(float3 pos, uniform Push push, uint iidx : SV_VulkanInstanceID)
+VSOutput main(uniform Push push, uint iidx : SV_VulkanInstanceID, uint vid : SV_VulkanVertexID)
 {
     VSOutput output;
+    float3 pos = push.vertices[vid].pos;
+;    
     Pose cam = push.scene.cam;
 
     output.local_pos = rotate(pos, cam.rot);

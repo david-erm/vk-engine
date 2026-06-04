@@ -17,9 +17,10 @@ VSOut main(float4 vertex, uniform Push push) {
     return output;
 }
 
+//TODO: Pass atlas properly
 [shader("fragment")]
 float4 main(VSOut input) {
-    float color = sampled[NonUniformResourceIndex(4)].Sample(samplers[0], input.tex_coords).r;
+    float color = sampled[NonUniformResourceIndex(6)].Sample(samplers[0], input.tex_coords).r;
     return float4(0.0, 0.8, 0.2, 1.0) * color;
 }
 
