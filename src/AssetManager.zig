@@ -1,5 +1,6 @@
 const std = @import("std");
 const Io = std.Io;
+const Allocator = std.mem.Allocator;
 
 pub const c = @import("c");
 const Gltf = @import("zgltf").Gltf;
@@ -24,8 +25,14 @@ const Vertex = struct {
     v: f32,
 };
 
-pub const ImageHandle = enum(u32) { _ };
-pub const ViewHandle = enum(u32) { _ };
+pub const ImageHandle = enum(u32) {
+    empty = std.math.maxInt(u32),
+    _,
+};
+pub const ViewHandle = enum(u32) {
+    empty = std.math.maxInt(u32),
+    _,
+};
 pub const ImageR = struct {
     handle: vk.Image,
     allocation: vma.Allocation,
@@ -189,12 +196,20 @@ pub const Hate = struct {
     sampled: ViewHandle,
 };
 
-pub fn loadTexture(manager: *AssetManager, ctx: *const Context, gpa: std.mem.Allocator, cp: vk.CommandPool, filename: [:0]const u8) !Hate {
+pub fn loadTextureFromFile(manager: *AssetManager, ctx: *const Context, gpa: std.mem.Allocator, cp: vk.CommandPool, filename: [:0]const u8) !Hate {
     log.debug("attempting to open {q}", .{filename});
-
     var texture: *ktx.Texture = try .fromNamedFile(filename.ptr, .{ .load_image_data_bit = true });
     defer texture.destroy();
+    return loadTexture(manager, ctx, gpa, cp, texture);
+}
 
+pub fn loadTextureFromMemory(manager: *AssetManager, ctx: *const Context, gpa: std.mem.Allocator, cp: vk.CommandPool, memory: []const u8) !Hate {
+    var texture: *ktx.Texture = try .fromMemory(memory, .{ .load_image_data_bit = true });
+    defer texture.destroy();
+    return loadTexture(manager, ctx, gpa, cp, texture);
+}
+
+pub fn loadTexture(manager: *AssetManager, ctx: *const Context, gpa: std.mem.Allocator, cp: vk.CommandPool, texture: *ktx.Texture) !Hate {
     const format: vk.Format = @enumFromInt(texture.getVkFormat());
     var image_ci: vk.ImageCreateInfo = .{
         .arrayLayers = texture.numLayers,
@@ -330,11 +345,11 @@ pub fn loadTexture(manager: *AssetManager, ctx: *const Context, gpa: std.mem.All
 }
 
 pub const Material = extern struct {
-    albedo: ViewHandle,
-    metallic_roughness: ViewHandle,
-    normal: ViewHandle,
-    occlusion: ViewHandle,
-    emissive: ViewHandle,
+    albedo: ViewHandle = .empty,
+    metallic_roughness: ViewHandle = .empty,
+    normal: ViewHandle = .empty,
+    occlusion: ViewHandle = .empty,
+    emissive: ViewHandle = .empty,
 };
 
 pub const Mesh = extern struct {
@@ -347,20 +362,43 @@ pub const Model = struct {
     materials: []Material,
     images: []ImageHandle,
     meshes: []Mesh,
-    pose: zkf.Pose,
 };
+
+fn getHate(
+    manager: *AssetManager,
+    io: Io,
+    gpa: Allocator,
+    ctx: *const Context,
+    cp: vk.CommandPool,
+    gltf: *const Gltf,
+    dir: Io.Dir,
+    model_name: []const u8,
+    tex_type: []const u8,
+    i: usize,
+    info: anytype,
+) !Hate {
+    const path = gltf.data.images[info.index].uri.?;
+    log.debug("Loading {q}", .{path});
+    const file = try dir.readFileAlloc(io, path, gpa, .unlimited);
+    defer gpa.free(file);
+    const hate = try manager.loadTextureFromMemory(ctx, gpa, cp, file);
+    var buf: [256]u8 = undefined;
+    const name = try std.fmt.bufPrintSentinel(&buf, "{s}:{s}#{}", .{ model_name, tex_type, i }, 0);
+    try vk.nameHandle(ctx.device, manager.getImage(hate.image), name.ptr);
+    return hate;
+}
 
 const IndexType = u32;
 pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.mem.Allocator, cp: vk.CommandPool, path: []const u8) !Model {
-    _ = ctx;
-    _ = cp;
     log.debug("Loading {q}", .{path});
 
     var out: Model = undefined;
 
     var gltf = Gltf.init(gpa);
     defer gltf.deinit();
-    const dir = try Io.Dir.openDir(.cwd(), io, Io.Dir.path.dirname(path) orelse ".", .{});
+    const dirname = Io.Dir.path.dirname(path) orelse ".";
+    const model_name = Io.Dir.path.stem(path);
+    const dir = try Io.Dir.openDir(.cwd(), io, dirname, .{});
     const buffer = try Io.Dir.cwd().readFileAllocOptions(io, path, gpa, .unlimited, .@"4", null);
     defer gpa.free(buffer);
     try gltf.parse(buffer);
@@ -376,21 +414,42 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
         gpa.free(bin);
     };
 
+    //TODO: materials should probably be a buffer on manager
+    out.materials = try gpa.alloc(Material, gltf.data.materials.len);
+    @memset(out.materials, .{});
+
+    var images: std.ArrayList(ImageHandle) = .empty;
     for (gltf.data.materials, 0..) |material, i| {
         log.debug("material #{} for {q}", .{ i, path });
         const albedo = material.metallic_roughness.base_color_texture;
         if (albedo) |info| {
-            const tex_path = gltf.data.images[info.index].uri.?;
-            const stat = try dir.statFile(io, tex_path, .{});
-            log.debug("albedo: {q} | size: {d:.3}MB", .{ tex_path, @as(f32, @floatFromInt(stat.size)) / 1_000_000 });
+            const hate = try manager.getHate(io, gpa, ctx, cp, &gltf, dir, model_name, "albedo", i, info);
+            out.materials[i].albedo = hate.sampled;
+            try images.append(gpa, hate.image);
         }
         const metrou = material.metallic_roughness.metallic_roughness_texture;
         if (metrou) |info| {
-            log.debug("metrou: {q}", .{gltf.data.images[info.index].uri.?});
+            const hate = try manager.getHate(io, gpa, ctx, cp, &gltf, dir, model_name, "met_rough", i, info);
+            out.materials[i].metallic_roughness = hate.sampled;
+            try images.append(gpa, hate.image);
         }
         const normal = material.normal_texture;
         if (normal) |info| {
-            log.debug("normal: {q}", .{gltf.data.images[info.index].uri.?});
+            const hate = try manager.getHate(io, gpa, ctx, cp, &gltf, dir, model_name, "normal", i, info);
+            out.materials[i].normal = hate.sampled;
+            try images.append(gpa, hate.image);
+        }
+        const emissive = material.emissive_texture;
+        if (emissive) |info| {
+            const hate = try manager.getHate(io, gpa, ctx, cp, &gltf, dir, model_name, "emissive", i, info);
+            out.materials[i].emissive = hate.sampled;
+            try images.append(gpa, hate.image);
+        }
+        const ao = material.occlusion_texture;
+        if (ao) |info| {
+            const hate = try manager.getHate(io, gpa, ctx, cp, &gltf, dir, model_name, "ao", i, info);
+            out.materials[i].occlusion = hate.sampled;
+            try images.append(gpa, hate.image);
         }
     }
 
@@ -402,11 +461,6 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
         const mesh_idx = node.mesh orelse continue;
 
         const mesh = gltf.data.meshes[mesh_idx];
-
-        out.pose = .{
-            .pos = @bitCast(node.translation),
-            .rot = @bitCast(node.rotation),
-        };
 
         for (mesh.primitives) |primitive| {
             const start_index: u32 = @intCast(manager.idx_offset / @sizeOf(IndexType));
@@ -462,6 +516,7 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
     }
 
     out.meshes = try meshes.toOwnedSlice(gpa);
+    out.images = try images.toOwnedSlice(gpa);
 
     return out;
 }
@@ -608,6 +663,7 @@ pub fn allocSampledImage(manager: *AssetManager, ctx: *const Context, ci: vk.Ima
 }
 
 pub fn freeSampledImage(manager: *AssetManager, ctx: *const Context, handle: ViewHandle) void {
+    if (handle == .empty) return;
     const idx: u32 = @intFromEnum(handle);
     const view = manager.sampled.get(idx);
     vk.destroyImageView(ctx.device, view, null);

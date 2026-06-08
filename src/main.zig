@@ -37,7 +37,7 @@ pub const Scene = extern struct {
     projection: Mat4 = .zero,
     ortho: Mat4 = .zero,
     cam: Pose = .{},
-    light_pos: Vec4 = .{ .x = 0.0, .y = -4.0, .z = 3.0, .w = 0.0 },
+    light_pos: Vec4 = .{ .x = 0.0, .y = -10.0, .z = 0.0, .w = 0.0 },
     selected: u32 = 1,
 };
 
@@ -101,17 +101,43 @@ pub fn main(init: std.process.Init) !void {
 
     _ = sdl.setWindowRelativeMouseMode(rctx.window, true);
 
-    //Models
-
     const suzanne_pulled = try asset.loadObj(a_static, &io, "assets/suzanne.obj");
     const cube = try asset.loadObj(a_static, &io, "assets/cube.obj");
-    const plane = asset.addMesh(&quad_indices, @ptrCast(&plane_vertices));
+    // const plane = asset.addMesh(&quad_indices, @ptrCast(&plane_vertices));
 
     const helm = try asset.loadGltf(&ctx, io, gpa, commandPool, "zig-out/assets/DamagedHelmet/DamagedHelmet.gltf");
-    defer gpa.free(helm.meshes);
+    defer {
+        for (helm.images) |img| {
+            asset.freeImage(&ctx, img);
+        }
+        for (helm.materials) |mat| {
+            asset.freeSampledImage(&ctx, mat.albedo);
+            asset.freeSampledImage(&ctx, mat.normal);
+            asset.freeSampledImage(&ctx, mat.emissive);
+            asset.freeSampledImage(&ctx, mat.occlusion);
+            asset.freeSampledImage(&ctx, mat.metallic_roughness);
+        }
+        gpa.free(helm.materials);
+        gpa.free(helm.images);
+        gpa.free(helm.meshes);
+    }
 
     const sponza = try asset.loadGltf(&ctx, io, gpa, commandPool, "zig-out/assets/Sponza/Sponza.gltf");
-    defer gpa.free(sponza.meshes);
+    defer {
+        for (sponza.images) |img| {
+            asset.freeImage(&ctx, img);
+        }
+        for (sponza.materials) |mat| {
+            asset.freeSampledImage(&ctx, mat.albedo);
+            asset.freeSampledImage(&ctx, mat.normal);
+            asset.freeSampledImage(&ctx, mat.metallic_roughness);
+            asset.freeSampledImage(&ctx, mat.emissive);
+            asset.freeSampledImage(&ctx, mat.occlusion);
+        }
+        gpa.free(sponza.materials);
+        gpa.free(sponza.images);
+        gpa.free(sponza.meshes);
+    }
 
     const quad_size = @sizeOf(f32) * 6 * 4;
     const text_quad = try zkf.Buffer.init(ctx.vka, .{
@@ -129,14 +155,11 @@ pub fn main(init: std.process.Init) !void {
     for (0..3) |i| {
         var buf: [128]u8 = @splat(0);
         const filename = try std.fmt.bufPrintSentinel(&buf, "assets/suzanne{}.ktx2", .{i}, 0);
-        handles[i] = try asset.loadTexture(&ctx, gpa, commandPool, filename);
+        handles[i] = try asset.loadTextureFromFile(&ctx, gpa, commandPool, filename);
     }
 
-    const handle2 = try asset.loadTexture(&ctx, gpa, commandPool, "assets/skybox.ktx2");
+    const handle2 = try asset.loadTextureFromFile(&ctx, gpa, commandPool, "assets/skybox.ktx2");
     defer asset.popHate(&ctx, handle2);
-
-    const helm_tex = try asset.loadTexture(&ctx, gpa, commandPool, "zig-out/assets/DamagedHelmet/Default_albedo.ktx2");
-    defer asset.popHate(&ctx, helm_tex);
 
     //fonts
     var ft: c.FT_Library = undefined;
@@ -153,7 +176,7 @@ pub fn main(init: std.process.Init) !void {
     const font_size = 64;
     if (c.FT_Set_Pixel_Sizes(face, 0, font_size) != 0) @panic("");
 
-    const atlas_size = 1024;
+    const atlas_size = 1024.0;
     var atlas_offsetx: u32 = 0;
     var atlas_offsety: u32 = 0;
     const atlas_ci: vk.ImageCreateInfo = .{
@@ -557,7 +580,7 @@ pub fn main(init: std.process.Init) !void {
     //"game stuff"
     var scene: Scene = .{};
     var poses: [thing_limit]Pose = @splat(.{});
-    var mats: [mat_limit]zkf.AssetManager.Material = undefined;
+    var mats: [mat_limit]zkf.AssetManager.Material = @splat(.{});
     var sel: u32 = 0;
 
     //some stats
@@ -583,7 +606,8 @@ pub fn main(init: std.process.Init) !void {
 
         const elasped: f32 = @floatFromInt(Io.Clock.now(.real, io).toMicroseconds() - last_time);
         last_time = Io.Clock.now(.real, io).toMicroseconds();
-        const dT = elasped / 1000000.0;
+        const flast: f64 = @as(f64, @floatFromInt(last_time)) / 1_000_000;
+        const dT = elasped / 1_000_000.0;
 
         frametime_acc += elasped;
         diff_acc += @abs(frametime_goal - elasped);
@@ -649,6 +673,7 @@ pub fn main(init: std.process.Init) !void {
         scene.ortho = .ortho(0.0, @floatFromInt(rctx.windowsize.width), 0.0, @floatFromInt(rctx.windowsize.height));
         scene.cam = cam.pose;
         scene.selected = sel;
+        scene.light_pos.x = @as(f32, @floatCast(@sin(std.math.pi * flast * 0.25))) * 4.0;
         for (0..3) |i| {
             const idx: f32 = @floatFromInt(i);
             const pos: Vec3 = .{ .x = (idx - 1.0) * 3.0, .y = -(idx), .z = 0.0 };
@@ -664,13 +689,16 @@ pub fn main(init: std.process.Init) !void {
             poses[i].rot = poses[i].rot.mul(.fromAngleAxis(std.math.pi * 0.5 * dT, lookup[i])).normalize();
             mats[i].albedo = handles[i].sampled;
         }
-        poses[4] = helm.pose;
+        poses[4] = .{ .pos = .{ .x = 0, .y = -4, .z = 0 } };
         poses_buffer[fif_index].write(0, poses);
         poses_buffer[fif_index].write(4 * @sizeOf(Pose), .{ .pos = .{ .z = -2 } });
 
         scene_buffer[fif_index].write(0, scene);
         mats[3].albedo = handle2.sampled;
-        mats[4].albedo = helm_tex.sampled;
+
+        @memcpy(mats[4..].ptr, helm.materials);
+        const offset = 4 + helm.materials.len;
+        @memcpy(mats[offset..].ptr, sponza.materials);
         mat_buf[fif_index].write(0, mats);
 
         const cb: vk.CommandBuffer = command_buffers[fif_index];
@@ -746,12 +774,14 @@ pub fn main(init: std.process.Init) !void {
 
                 vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Vertex Pulling" });
 
-                vk.cmdDrawIndexed(cb, plane.index_count, 1, plane.start_index, plane.start_vertex, 4);
+                // vk.cmdDrawIndexed(cb, plane.index_count, 1, plane.start_index, plane.start_vertex, 4);
                 vk.cmdDrawIndexed(cb, suzanne_pulled.index_count, 3, suzanne_pulled.start_index, suzanne_pulled.start_vertex, 0);
                 vk.cmdDrawIndexed(cb, helm.meshes[0].index_count, 1, helm.meshes[0].start_index, helm.meshes[0].start_vertex, 4);
 
-                for (sponza.meshes) |mesh| {
-                    vk.cmdDrawIndexed(cb, mesh.index_count, 1, mesh.start_index, mesh.start_vertex, 5);
+                //TODO: multiple meshes part of 1 model, how to resolve position then?
+                //
+                for (sponza.meshes, 0..) |mesh, i| {
+                    vk.cmdDrawIndexed(cb, mesh.index_count, 1, mesh.start_index, mesh.start_vertex, @intCast(offset + i));
                 }
 
                 vk.cmdEndDebugUtilsLabelEXT(cb);

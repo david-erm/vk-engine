@@ -37,8 +37,8 @@ pub fn main(init: std.process.Init) !void {
             c.aiProcess_FindDegenerates |
             c.aiProcess_FindInvalidData |
             c.aiProcess_FindInstances |
-            c.aiProcess_FlipWindingOrder |
-            c.aiProcess_FlipUVs,
+            c.aiProcess_FlipWindingOrder,
+        // c.aiProcess_FlipUVs,
     ) orelse {
         log.err("{s}", .{c.aiGetErrorString()});
         return error.Assimp;
@@ -249,14 +249,15 @@ pub fn makeKtx(
     var params: ktx.BasisParams = .{
         .uastc = true,
         .threadCount = 1,
-        .uastcRDO = false,
-        .uastcFlags = .level_fastest,
+        .uastcRDO = true,
+        .uastcFlags = .{ .level = .veryslow, .favor_bc7_error = true },
+        .qualityLevel = 256,
         .normalMap = settings.normal_map,
         .inputSwizzle = settings.swizzle,
     };
     try texture.compressBasisEx(&params);
-    try texture.transcodeBasis(settings.bcn_format, @enumFromInt(0));
-    try texture.deflateZstd(1);
+    try texture.transcodeBasis(settings.bcn_format, .high_quality);
+    try texture.deflateZstd(22);
 
     const ktx_contents = try texture.writeToMemory();
     defer std.heap.c_allocator.free(ktx_contents);

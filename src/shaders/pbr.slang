@@ -7,7 +7,7 @@ struct VSOut {
     float2 UV;
     float3 LightVec;
     float3 ViewVec;
-    uint mat;  
+    Material mat;  
 };
 
 [shader("vertex")]
@@ -26,7 +26,7 @@ VSOut main(uniform Push push, uint vid : SV_VulkanVertexID, uint iid : SV_Vulkan
     output.Pos = mul(push.scene.projection, float4(frag_pos, 1.0));
     output.ViewVec  = -frag_pos;
 
-    output.mat = push.materials[iid].albedo;
+    output.mat = push.materials[iid];
     output.UV = uv;
     
     return output;
@@ -35,15 +35,24 @@ VSOut main(uniform Push push, uint vid : SV_VulkanVertexID, uint iid : SV_Vulkan
 
 [shader("fragment")]
 float4 main(VSOut input) {
-    float3 N = normalize(input.Normal);
-    float3 L = normalize(input.LightVec);
-    float3 V = normalize(input.ViewVec);
-    float3 R = reflect(-L, N);
-    float3 diffuse = max(dot(N, L), 0.0025);
-    float3 specular = pow(max(dot(R, V), 0.00001), 64.0) * 0.75;
+    float3 N;
+    if (input.mat.normal != (1 << 32) - 1) {
+        float2 raw_n = sampled[input.mat.normal].Sample(samplers[0], input.UV).rg; 
+        N = normalsToViewSpace(restoreNormal(raw_n), -input.ViewVec, input.UV, input.Normal);
+    } else {
+        N = normalize(input.Normal);
+    }
+    const float3 L = normalize(input.LightVec);
+    const float3 V = normalize(input.ViewVec);
+    const float3 R = reflect(-L, N);
+    const float3 diffuse = max(dot(N, L), 0.0025);
+    const float3 specular = pow(max(dot(R, V), 0.00001), 64.0) * 0.75;
+
+    const float d = distance(-input.ViewVec, input.LightVec);
+    const float intensity = (1 / (d * d)) * 10.0;
 
     float3 color;
-    color = sampled[NonUniformResourceIndex(input.mat)].Sample(samplers[0], input.UV).rgb;
-    return float4(color.rgb * (diffuse + float3(0.1)) + specular, 1.0);
-    // return float4(input.Normal, 1.0);
+    color = sampled[NonUniformResourceIndex(input.mat.albedo)].Sample(samplers[0], input.UV).rgb;
+    return float4(color.rgb * (diffuse + specular) * intensity, 1.0);
+    // return float4(sampled[input.mat.metallic_roughness].Sample(samplers[0], input.UV).rgb, 1.0);
 }

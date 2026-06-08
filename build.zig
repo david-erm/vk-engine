@@ -24,6 +24,10 @@ pub fn build(b: *std.Build) !void {
     //dependecies
     const zgltf = b.dependency("zgltf", .{});
     const stb = b.dependency("stb", .{});
+    const mikkt = b.dependency("mikktspace", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     //project modules
     const vk = b.createModule(.{
@@ -38,7 +42,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
-    buildBake(b, bake_optimize, stb, ktx);
+    buildBake(b, bake_optimize, stb, ktx, mikkt.module("mikktspace"));
 
     const c = b.addTranslateC(.{
         .root_source_file = b.addWriteFiles().add("c.h",
@@ -113,6 +117,7 @@ pub fn buildBake(
     optimize: std.builtin.OptimizeMode,
     stb: *Build.Dependency,
     ktx: *Build.Module,
+    mikkt: *Build.Module,
 ) void {
     const c_step = b.addTranslateC(.{
         .root_source_file = b.addWriteFiles().add("c.h",
@@ -149,6 +154,7 @@ pub fn buildBake(
 
     bake.root_module.addImport("c", cmod);
     bake.root_module.addImport("ktx", ktx);
+    bake.root_module.addImport("mikktspace", mikkt);
 
     const bake_step = b.step("bake", "Bake assets");
 

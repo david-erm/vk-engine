@@ -519,9 +519,7 @@ pub fn createWindow(title: [*:0]const u8, w: i32, h: i32, flags: WindowFlags) er
     };
 }
 pub const destroyWindow = @extern(*const fn (window: *Window) callconv(.c) void, .{ .name = "SDL_DestroyWindow" });
-
 pub const quitSubsystem = @extern(*const fn (flags: InitFlags) callconv(.c) void, .{ .name = "SDL_QuitSubSystem" });
-
 pub const getWindowSize = @extern(*const fn (window: Window, w: *i32, h: *i32) callconv(.c) bool, .{ .name = "SDL_GetWindowSize" });
 pub const setWindowRelativeMouseMode = @extern(*const fn (window: Window, enable: bool) callconv(.c) bool, .{ .name = "SDL_SetWindowRelativeMouseMode" });
 pub const setWindowFullscreen = @extern(*const fn (window: Window, enable: bool) callconv(.c) bool, .{ .name = "SDL_SetWindowFullscreen" });

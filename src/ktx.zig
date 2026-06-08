@@ -68,18 +68,22 @@ pub const SupercmpScheme = enum(u32) {
     zlib,
 };
 
-pub const PackUastc = enum(u32) {
-    level_fastest = 0,
-    level_faster = 1,
-    level_default = 2,
-    level_slower = 3,
-    level_veryslow = 4,
-    level_mask = 0xf,
-    favor_uastc_error = 8,
-    favor_bc7_error = 16,
-    etc1_faster_hints = 64,
-    etc1_fastest_hints = 128,
-    _etc1_disable_flip_and_individual = 256,
+pub const PackUastc = packed struct(u32) {
+    pub const Level = enum(u3) {
+        fastest = 0,
+        faster = 1,
+        default = 2,
+        slower = 3,
+        veryslow = 4,
+    };
+    level: Level = .default,
+    favor_uastc_error: bool = false,
+    favor_bc7_error: bool = false,
+    _pad: bool = false,
+    etc1_faster_hints: bool = false,
+    etc1_fastest_hints: bool = false,
+    _etc1_disable_flip_and_individual: bool = false,
+    _pad2: u23 = 0,
 };
 
 pub const TranscodeFormat = enum(u32) {
@@ -215,7 +219,7 @@ pub const BasisParams = extern struct {
     preSwizzle: bool = false,
     noEndpointRDO: bool = false,
     noSelectorRDO: bool = false,
-    uastcFlags: PackUastc = .level_fastest,
+    uastcFlags: PackUastc = .{},
     uastcRDO: bool = false,
     uastcRDOQualityScalar: f32 = 0.0,
     uastcRDODictSize: u32 = 0,
@@ -299,6 +303,12 @@ pub const Texture = extern struct {
         return tex;
     }
 
+    pub fn fromMemory(memory: []const u8, flags: CreateFlags) Error!*Texture {
+        var tex: *Texture = undefined;
+        try makeError(Error, ktxTexture2_CreateFromMemory(memory.ptr, memory.len, flags, &tex));
+        return tex;
+    }
+
     pub fn setImageFromMemory(texture: *Texture, level: u32, layer: u32, faceSlice: u32, src: []const u8) !void {
         return makeError(Error, texture.vtbl.SetImageFromMemory.?(texture, level, layer, faceSlice, src.ptr, src.len));
     }
@@ -337,6 +347,7 @@ pub const Texture = extern struct {
 };
 
 extern fn ktxTexture_CreateFromNamedFile(filename: [*:0]const u8, createFlags: Texture.CreateFlags, newTex: **Texture) ErrorEnum;
+extern fn ktxTexture2_CreateFromMemory(bytes: [*]const u8, size: usize, createFlags: Texture.CreateFlags, newTex: **Texture) ErrorEnum;
 extern fn ktxTexture_GetVkFormat(texture: *Texture) u32;
 extern fn ktxTexture2_Create(ci: *const Texture.CreateInfo, storageAllocation: Texture.CreateStorage, newTex: **Texture) ErrorEnum;
 
