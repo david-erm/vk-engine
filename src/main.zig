@@ -107,10 +107,10 @@ pub fn main(init: std.process.Init) !void {
     const cube = try asset.loadObj(a_static, &io, "assets/cube.obj");
     const plane = asset.addMesh(&quad_indices, @ptrCast(&plane_vertices));
 
-    const helm = try asset.loadGltf(&ctx, io, gpa, commandPool, "assets/helm/DamagedHelmet.gltf");
+    const helm = try asset.loadGltf(&ctx, io, gpa, commandPool, "zig-out/assets/DamagedHelmet/DamagedHelmet.gltf");
     defer gpa.free(helm.meshes);
 
-    const sponza = try asset.loadGltf(&ctx, io, gpa, commandPool, "../zig-graphics/src/assets/glTF-Sample-Assets/Models/Sponza/glTF/Sponza.gltf");
+    const sponza = try asset.loadGltf(&ctx, io, gpa, commandPool, "zig-out/assets/Sponza/Sponza.gltf");
     defer gpa.free(sponza.meshes);
 
     const quad_size = @sizeOf(f32) * 6 * 4;
@@ -135,7 +135,7 @@ pub fn main(init: std.process.Init) !void {
     const handle2 = try asset.loadTexture(&ctx, gpa, commandPool, "assets/skybox.ktx2");
     defer asset.popHate(&ctx, handle2);
 
-    const helm_tex = try asset.loadTexture(&ctx, gpa, commandPool, "assets/helm/albedo.ktx2");
+    const helm_tex = try asset.loadTexture(&ctx, gpa, commandPool, "zig-out/assets/DamagedHelmet/Default_albedo.ktx2");
     defer asset.popHate(&ctx, helm_tex);
 
     //fonts
@@ -737,7 +737,7 @@ pub fn main(init: std.process.Init) !void {
                 vk.cmdSetScissor(cb, 0, 1, @ptrCast(&scissor));
 
                 vk.cmdBindPipeline(cb, .graphics, pbr_pipeline);
-                vk.cmdBindIndexBuffer(cb, asset.indices.handle, 0, .uint16);
+                vk.cmdBindIndexBuffer(cb, asset.indices.handle, 0, .uint32);
                 vk.cmdBindDescriptorSets(cb, .graphics, pipeline_layout, 0, 1, @ptrCast(&asset.descriptor_set), 0, undefined);
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&scene_buffer[fif_index].address(ctx.device)));
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 8, 8, @ptrCast(&poses_buffer[fif_index].address(ctx.device)));
@@ -880,7 +880,7 @@ pub fn main(init: std.process.Init) !void {
     log.info("avg_framtime: {}\tavg_diff from {}: {}", .{ frametime_acc / fframe, frametime_goal, diff_acc / fframe });
 }
 
-const quad_indices: [6]u16 = .{
+const quad_indices: [6]u32 = .{
     0, 1, 2,
     2, 3, 0,
 };

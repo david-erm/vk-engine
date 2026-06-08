@@ -1,5 +1,14 @@
-const h = @import("zkf.zig");
-const vk = @import("vk");
+pub fn makeError(comptime err: type, ret: anytype) err!void {
+    switch (ret) {
+        @enumFromInt(0) => {
+            return;
+        },
+        inline else => |t| {
+            return @field(err, @tagName(t));
+        },
+    }
+}
+
 pub const ErrorEnum = enum(u32) {
     Success = 0,
     FileData,
@@ -57,6 +66,61 @@ pub const SupercmpScheme = enum(u32) {
     basis_lz,
     zstd,
     zlib,
+};
+
+pub const PackUastc = enum(u32) {
+    level_fastest = 0,
+    level_faster = 1,
+    level_default = 2,
+    level_slower = 3,
+    level_veryslow = 4,
+    level_mask = 0xf,
+    favor_uastc_error = 8,
+    favor_bc7_error = 16,
+    etc1_faster_hints = 64,
+    etc1_fastest_hints = 128,
+    _etc1_disable_flip_and_individual = 256,
+};
+
+pub const TranscodeFormat = enum(u32) {
+    // Compressed formats
+    // ETC1-2
+    etc1_rgb = 0,
+    etc2_rgba = 1,
+    // BC1-5, BC7 (desktop, some mobile devices)
+    bc1_rgb = 2,
+    bc3_rgba = 3,
+    bc4_r = 4,
+    bc5_rg = 5,
+    bc7_rgba = 6,
+    // PVRTC1 4bpp (mobile, PowerVR devices)
+    pvrtc1_4_rgb = 8,
+    pvrtc1_4_rgba = 9,
+    // ASTC (mobile, Intel devices, hopefully all desktop GPU's one day)
+    astc_4x4_rgba = 10,
+    // ATC and FXT1 formats are not supported by KTX2 as there
+    // are no equivalent VkFormats.
+    pvrtc2_4_rgb = 18,
+    pvrtc2_4_rgba = 19,
+    etc2_eac_r11 = 20,
+    etc2_eac_rg11 = 21,
+    // Uncompressed (raw pixel) formats
+    rgba32 = 13,
+    rgb565 = 14,
+    bgr565 = 15,
+    rgba4444 = 16,
+    // Values for automatic selection of RGB or RGBA depending if alpha
+    // present.
+    etc = 22,
+    bc1_or_3 = 23,
+    noselection = 0x7fffffff,
+};
+
+pub const TranscodeFlags = enum(u32) {
+    pvrtc_decode_to_next_pow2 = 2,
+    transcode_alpha_data_to_opaque_formats = 4,
+    high_quality = 32,
+    _,
 };
 
 const FILE = opaque {};
@@ -132,6 +196,35 @@ pub const Orientation = extern struct {
     y: OrientationY,
     z: OrientationZ,
 };
+
+pub const BasisParams = extern struct {
+    structSize: u32 = @sizeOf(BasisParams),
+    uastc: bool = false,
+    verbose: bool = false,
+    noSSE: bool = false,
+    threadCount: u32 = 0,
+    compressionLevel: u32 = 2,
+    qualityLevel: u32 = 0,
+    maxEndpoints: u32 = 0,
+    endpointRDOThreshold: f32 = 0.0,
+    maxSelectors: u32 = 0,
+    selectorRDOThreshold: f32 = 0.0,
+    inputSwizzle: [4]u8 = @splat(0),
+    normalMap: bool = false,
+    separateRGToRGB_A: bool = false,
+    preSwizzle: bool = false,
+    noEndpointRDO: bool = false,
+    noSelectorRDO: bool = false,
+    uastcFlags: PackUastc = .level_fastest,
+    uastcRDO: bool = false,
+    uastcRDOQualityScalar: f32 = 0.0,
+    uastcRDODictSize: u32 = 0,
+    uastcRDOMaxSmoothBlockErrorScale: f32 = 0.0,
+    uastcRDOMaxSmoothBlockStdDev: f32 = 0.0,
+    uastcRDODontFavorSimplerModes: bool = false,
+    uastcRDONoMultithreading: bool = false,
+};
+
 pub const TextureVvbl = opaque {};
 pub const TextureProtected = opaque {};
 pub const KVListEntry = opaque {};
@@ -144,6 +237,25 @@ pub const Texture = extern struct {
         check_gltf_basisu_bit: bool = false,
         _padding: u28 = 0,
     };
+    pub const CreateStorage = enum(u32) {
+        no_storage,
+        alloc_storage,
+    };
+    pub const CreateInfo = extern struct {
+        glInternalformat: u32 = 0,
+        vkFormat: u32,
+        pDfd: ?[*]u32 = null,
+        baseWidth: u32,
+        baseHeight: u32,
+        baseDepth: u32,
+        numDimensions: u32,
+        numLevels: u32,
+        numLayers: u32,
+        numFaces: u32,
+        isArray: bool,
+        generateMipmaps: bool,
+    };
+
     classId: ClassId,
     vtbl: *TextureVtbl,
     vvtbl: *TextureVvbl,
@@ -166,32 +278,68 @@ pub const Texture = extern struct {
     dataSize: u64,
     pData: [*]u8,
     //tex 2 stuff
-    // vkFormat: vk.Format,
-    // pDfd: *u32,
-    // supercompressionScheme: SupercmpScheme,
-    // isVideo: bool,
-    // duration: u32,
-    // timescale: u32,
-    // loopcount: u32,
-    // _private: *opaque {},
+    vkFormat: u32,
+    pDfd: *u32,
+    supercompressionScheme: SupercmpScheme,
+    isVideo: bool,
+    duration: u32,
+    timescale: u32,
+    loopcount: u32,
+    _private: *opaque {},
+
+    pub fn create(ci: *const CreateInfo, storage_allocation: CreateStorage) !*Texture {
+        var tex: *Texture = undefined;
+        try makeError(Error, ktxTexture2_Create(ci, storage_allocation, &tex));
+        return tex;
+    }
 
     pub fn fromNamedFile(filename: [*:0]const u8, flags: CreateFlags) Error!*Texture {
         var tex: *Texture = undefined;
-        try h.makeError(Error, ktxTexture_CreateFromNamedFile(filename, flags, &tex));
+        try makeError(Error, ktxTexture_CreateFromNamedFile(filename, flags, &tex));
         return tex;
     }
-    pub fn getVkFormat(this: *Texture) vk.Format {
+
+    pub fn setImageFromMemory(texture: *Texture, level: u32, layer: u32, faceSlice: u32, src: []const u8) !void {
+        return makeError(Error, texture.vtbl.SetImageFromMemory.?(texture, level, layer, faceSlice, src.ptr, src.len));
+    }
+
+    pub fn getVkFormat(this: *Texture) u32 {
         return ktxTexture_GetVkFormat(this);
     }
+
     pub fn getImageOffset(this: *Texture, level: u32, layer: u32, faceslice: u32) Error!u64 {
         var offset: u64 = 0;
-        try h.makeError(Error, this.vtbl.GetImageOffset.?(this, level, layer, faceslice, &offset));
+        try makeError(Error, this.vtbl.GetImageOffset.?(this, level, layer, faceslice, &offset));
         return offset;
     }
+
+    pub fn writeToMemory(this: *Texture) Error![]const u8 {
+        var slice: []u8 = undefined;
+        try makeError(Error, this.vtbl.WriteToMemory.?(this, @ptrCast(&slice.ptr), &slice.len));
+        return slice;
+    }
+
+    pub fn compressBasisEx(this: *Texture, params: *BasisParams) !void {
+        return makeError(Error, ktxTexture2_CompressBasisEx(this, params));
+    }
+
+    pub fn transcodeBasis(this: *Texture, fmt: TranscodeFormat, flags: TranscodeFlags) !void {
+        return makeError(Error, ktxTexture2_TranscodeBasis(this, fmt, flags));
+    }
+
+    pub fn deflateZstd(this: *Texture, level: u32) !void {
+        return makeError(Error, ktxTexture2_DeflateZstd(this, level));
+    }
+
     pub fn destroy(this: *Texture) void {
         this.vtbl.Destroy.?(this);
     }
 };
 
 extern fn ktxTexture_CreateFromNamedFile(filename: [*:0]const u8, createFlags: Texture.CreateFlags, newTex: **Texture) ErrorEnum;
-extern fn ktxTexture_GetVkFormat(texture: *Texture) vk.Format;
+extern fn ktxTexture_GetVkFormat(texture: *Texture) u32;
+extern fn ktxTexture2_Create(ci: *const Texture.CreateInfo, storageAllocation: Texture.CreateStorage, newTex: **Texture) ErrorEnum;
+
+extern fn ktxTexture2_CompressBasisEx(this: *Texture, params: *BasisParams) ErrorEnum;
+extern fn ktxTexture2_TranscodeBasis(this: *Texture, fmt: TranscodeFormat, transcodeFlags: TranscodeFlags) ErrorEnum;
+extern fn ktxTexture2_DeflateZstd(this: *Texture, level: u32) ErrorEnum;

@@ -195,7 +195,7 @@ pub fn loadTexture(manager: *AssetManager, ctx: *const Context, gpa: std.mem.All
     var texture: *ktx.Texture = try .fromNamedFile(filename.ptr, .{ .load_image_data_bit = true });
     defer texture.destroy();
 
-    const format = texture.getVkFormat();
+    const format: vk.Format = @enumFromInt(texture.getVkFormat());
     var image_ci: vk.ImageCreateInfo = .{
         .arrayLayers = texture.numLayers,
         .imageType = @enumFromInt(texture.numDimensions - 1),
@@ -350,28 +350,7 @@ pub const Model = struct {
     pose: zkf.Pose,
 };
 
-pub const StridedView = struct {
-    const View = @This();
-    buf: []const u8,
-    i: usize,
-    stride: usize,
-
-    pub fn init(bytes: []const u8, stride: usize) View {
-        return .{
-            .buf = bytes,
-            .i = 0,
-            .stride = stride,
-        };
-    }
-
-    pub fn next(T: type, view: View) ?T {
-        if (view.i * (view.stride + @sizeOf(T)) > view.buf.len) return null;
-        const val: T = @bitCast(view.buf[view.i * (view.stride + @sizeOf(T))]);
-        view.i += 1;
-        return val;
-    }
-};
-
+const IndexType = u32;
 pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.mem.Allocator, cp: vk.CommandPool, path: []const u8) !Model {
     _ = ctx;
     _ = cp;
@@ -389,17 +368,39 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
     const bins: [][]align(4) const u8 = try gpa.alloc([]align(4) const u8, gltf.data.buffers.len);
     defer gpa.free(bins);
     for (gltf.data.buffers, bins) |buf, *bin| {
-        bin.* = try dir.readFileAllocOptions(io, buf.uri.?, gpa, .unlimited, .@"4", null);
+        //TODO: fix cook
+        _ = buf;
+        bin.* = try dir.readFileAllocOptions(io, "bin", gpa, .unlimited, .@"4", null);
     }
     defer for (bins) |bin| {
         gpa.free(bin);
     };
 
+    for (gltf.data.materials, 0..) |material, i| {
+        log.debug("material #{} for {q}", .{ i, path });
+        const albedo = material.metallic_roughness.base_color_texture;
+        if (albedo) |info| {
+            const tex_path = gltf.data.images[info.index].uri.?;
+            const stat = try dir.statFile(io, tex_path, .{});
+            log.debug("albedo: {q} | size: {d:.3}MB", .{ tex_path, @as(f32, @floatFromInt(stat.size)) / 1_000_000 });
+        }
+        const metrou = material.metallic_roughness.metallic_roughness_texture;
+        if (metrou) |info| {
+            log.debug("metrou: {q}", .{gltf.data.images[info.index].uri.?});
+        }
+        const normal = material.normal_texture;
+        if (normal) |info| {
+            log.debug("normal: {q}", .{gltf.data.images[info.index].uri.?});
+        }
+    }
+
+    var meshes: std.ArrayList(Mesh) = .empty;
     for (gltf.data.nodes) |node| {
         const scale: zkf.Vec3 = @bitCast(node.scale);
         const gl_to_vulkan = zkf.Vec3{ .x = 1, .y = -1, .z = -1 };
 
-        const mesh_idx = node.mesh orelse return error.NoMesh;
+        const mesh_idx = node.mesh orelse continue;
+
         const mesh = gltf.data.meshes[mesh_idx];
 
         out.pose = .{
@@ -407,27 +408,22 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
             .rot = @bitCast(node.rotation),
         };
 
-        out.meshes = try gpa.alloc(Mesh, mesh.primitives.len);
+        for (mesh.primitives) |primitive| {
+            const start_index: u32 = @intCast(manager.idx_offset / @sizeOf(IndexType));
+            const start_vertex: i32 = @intCast(manager.vert_offset / @sizeOf(Vertex));
 
-        for (mesh.primitives, 0..) |primitive, i| {
-            out.meshes[i].start_index = @intCast(manager.idx_offset / @sizeOf(u16));
-            out.meshes[i].start_vertex = @intCast(manager.vert_offset / @sizeOf(Vertex));
+            const indices = gltf.data.accessors[primitive.indices orelse return error.NoIndices];
+            const index_count: u32 = @intCast(indices.count);
+
+            try meshes.append(gpa, .{ .start_index = start_index, .start_vertex = start_vertex, .index_count = index_count });
 
             const material = gltf.data.materials[primitive.material orelse return error.NoMaterial];
             _ = material;
 
-            const indices = gltf.data.accessors[primitive.indices orelse return error.NoIndices];
-            out.meshes[i].index_count = @intCast(indices.count);
-
-            var indices_it = indices.iterator(u16, &gltf, bins[gltf.data.buffer_views[indices.buffer_view.?].buffer]);
-            for (0..@divExact(indices.count, 3)) |_| {
-                var triangle: [3]u16 = undefined;
-                //reverse winding order
-                triangle[2] = indices_it.next().?[0];
-                triangle[1] = indices_it.next().?[0];
-                triangle[0] = indices_it.next().?[0];
-                manager.indices.write(manager.idx_offset, triangle);
-                manager.idx_offset += @sizeOf([3]u16);
+            var indices_it = indices.iterator(IndexType, &gltf, bins[gltf.data.buffer_views[indices.buffer_view.?].buffer]);
+            while (indices_it.next()) |val| {
+                manager.indices.write(manager.idx_offset, val);
+                manager.idx_offset += @sizeOf(u32);
             }
 
             var positions: Gltf.Accessor = undefined;
@@ -438,9 +434,7 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
                     .position => |val| positions = gltf.data.accessors[val],
                     .normal => |val| normals = gltf.data.accessors[val],
                     .texcoord => |val| texcoords = gltf.data.accessors[val],
-                    else => {
-                        // log.debug("not used: {t}", .{attr});
-                    },
+                    else => {},
                 }
             }
 
@@ -466,6 +460,8 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
             }
         }
     }
+
+    out.meshes = try meshes.toOwnedSlice(gpa);
 
     return out;
 }
@@ -508,30 +504,30 @@ pub fn loadObj(manager: *AssetManager, arena: std.mem.Allocator, io: *std.Io, pa
         };
         manager.vertices.write(manager.vert_offset, vert);
         manager.vert_offset += @sizeOf(Vertex);
-        manager.indices.write(manager.idx_offset, @as(u16, @intCast(i)));
-        manager.idx_offset += @sizeOf(u16);
+        manager.indices.write(manager.idx_offset, @as(IndexType, @intCast(i)));
+        manager.idx_offset += @sizeOf(IndexType);
     }
     c.tinyobj_attrib_free(&attrib);
     c.tinyobj_materials_free(materials, materials_num);
     c.tinyobj_shapes_free(shapes, shapes_num);
 
     return .{
-        .start_index = idx_start / @sizeOf(u16),
+        .start_index = idx_start / @sizeOf(IndexType),
         .index_count = attrib.num_faces,
         .start_vertex = @intCast(vert_start / @sizeOf(Vertex)),
     };
 }
 
-pub fn addMesh(manager: *AssetManager, indices: []const u16, vertices: []const Vertex) Mesh {
+pub fn addMesh(manager: *AssetManager, indices: []const IndexType, vertices: []const Vertex) Mesh {
     const mesh: Mesh = .{
         .start_vertex = @intCast(manager.vert_offset / @sizeOf(Vertex)),
-        .start_index = @intCast(manager.idx_offset / @sizeOf(u16)),
+        .start_index = @intCast(manager.idx_offset / @sizeOf(IndexType)),
         .index_count = @intCast(indices.len),
     };
     manager.vertices.write(manager.vert_offset, vertices);
     manager.vert_offset += vertices.len * @sizeOf(Vertex);
     manager.indices.write(manager.idx_offset, indices);
-    manager.idx_offset += indices.len * @sizeOf(u16);
+    manager.idx_offset += indices.len * @sizeOf(IndexType);
 
     return mesh;
 }

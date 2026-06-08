@@ -1,9 +1,12 @@
 const std = @import("std");
+const Io = std.Io;
 const log = std.log.scoped(.build);
+const Build = std.Build;
 
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const bake_optimize = b.option(std.builtin.OptimizeMode, "bake-optimize", "Optimization level for bake step binaries") orelse .Debug;
 
     const vulkan_sdk = b.graph.environ_map.get("VULKAN_SDK") orelse {
         log.err("Could not find VulkanSDK. Try sourcing setup-env.sh", .{});
@@ -20,6 +23,22 @@ pub fn build(b: *std.Build) !void {
 
     //dependecies
     const zgltf = b.dependency("zgltf", .{});
+    const stb = b.dependency("stb", .{});
+
+    //project modules
+    const vk = b.createModule(.{
+        .root_source_file = b.path("src/vk.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const ktx = b.createModule(.{
+        .root_source_file = b.path("src/ktx.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    buildBake(b, bake_optimize, stb, ktx);
 
     const c = b.addTranslateC(.{
         .root_source_file = b.addWriteFiles().add("c.h",
@@ -36,6 +55,7 @@ pub fn build(b: *std.Build) !void {
     c.linkSystemLibrary("freetype", .{});
 
     const cMod = c.createModule();
+    cMod.link_libcpp = true;
     cMod.addCSourceFile(.{
         .file = b.addWriteFiles().add("impl.cpp",
             \\#define VK_NO_PROTOTYPES
@@ -46,17 +66,10 @@ pub fn build(b: *std.Build) !void {
             \\#include "tinyobj_loader_c.h"
         ),
     });
-    cMod.link_libcpp = true;
     cMod.addIncludePath(vulkan);
-    cMod.addIncludePath(b.path("src/include"));
+    cMod.addIncludePath(include);
     cMod.linkSystemLibrary("SDL3", .{});
     cMod.linkSystemLibrary("ktx", .{});
-
-    const vk = b.createModule(.{
-        .root_source_file = b.path("src/vk.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
 
     const shaders = try compileShaders(b, vk, target, optimize, &.{
         "src/shaders/skybox.slang",
@@ -95,6 +108,73 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(&run_exe_tests.step);
 }
 
+pub fn buildBake(
+    b: *std.Build,
+    optimize: std.builtin.OptimizeMode,
+    stb: *Build.Dependency,
+    ktx: *Build.Module,
+) void {
+    const c_step = b.addTranslateC(.{
+        .root_source_file = b.addWriteFiles().add("c.h",
+            // \\ #include <ktx.h>
+            \\ #include <stb_image.h>
+            \\ #include <assimp/cimport.h>
+            \\ #include <assimp/cexport.h>
+            \\ #include <assimp/scene.h>
+            \\ #include <assimp/postprocess.h>
+        ),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    c_step.addIncludePath(stb.path(""));
+    c_step.linkSystemLibrary("assimp", .{});
+    c_step.linkSystemLibrary("ktx", .{});
+    const cmod = c_step.createModule();
+    cmod.addCSourceFile(.{
+        .file = b.addWriteFiles().add("impl.c",
+            \\ #define STB_IMAGE_IMPLEMENTATION
+            \\ #include <stb_image.h>
+        ),
+    });
+    cmod.addIncludePath(stb.path(""));
+
+    const bake = b.addExecutable(.{
+        .name = "bake",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/bake.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+        }),
+    });
+
+    bake.root_module.addImport("c", cmod);
+    bake.root_module.addImport("ktx", ktx);
+
+    const bake_step = b.step("bake", "Bake assets");
+
+    const models: []const []const u8 = &.{
+        "../zig-graphics/src/assets/glTF-Sample-Assets/Models/DamagedHelmet/glTF/DamagedHelmet.gltf",
+        "../zig-graphics/src/assets/glTF-Sample-Assets/Models/Sponza/glTF/Sponza.gltf",
+    };
+
+    for (models) |model| {
+        const bake_cmd = b.addRunArtifact(bake);
+        const model_name = Io.Dir.path.stem(model);
+
+        bake_cmd.addPrefixedFileArg("--model=", b.graph.cwdRelativePath(model));
+        const model_dir = bake_cmd.addPrefixedOutputDirectoryArg("--outdir=", model_name);
+
+        const install = b.addInstallDirectory(.{
+            .source_dir = model_dir,
+            .install_dir = .{ .custom = "assets" },
+            .install_subdir = model_name,
+        });
+
+        bake_step.dependOn(&bake_cmd.step);
+        bake_step.dependOn(&install.step);
+    }
+}
+
 pub fn compileShaders(
     b: *std.Build,
     vk: *std.Build.Module,
@@ -107,6 +187,7 @@ pub fn compileShaders(
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/shader_reflect.zig"),
             .target = b.graph.host,
+            .optimize = optimize,
         }),
     });
 

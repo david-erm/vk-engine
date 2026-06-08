@@ -44,6 +44,6 @@ float4 main(VSOut input) {
 
     float3 color;
     color = sampled[NonUniformResourceIndex(input.mat)].Sample(samplers[0], input.UV).rgb;
-    // return float4(color.rgb * (diffuse + float3(0.1)) + specular, 1.0);
-    return float4(input.Normal, 1.0);
+    return float4(color.rgb * (diffuse + float3(0.1)) + specular, 1.0);
+    // return float4(input.Normal, 1.0);
 }
