@@ -4,6 +4,7 @@ const Io = std.Io;
 
 const c = @import("c");
 const ktx = @import("ktx");
+const bcn = @import("bcn");
 
 var exit: std.atomic.Value(bool) = .init(false);
 
@@ -154,10 +155,10 @@ pub fn check(result: c_int) !void {
 }
 
 pub const Settings = struct {
-    in_format: Format,
-    bcn_format: ktx.TranscodeFormat,
+    bcn_format: Format,
     normal_map: bool = false,
-    swizzle: [4]u8 = .{ 'r', 'g', 'b', 'a' },
+    chan0: u32 = 0,
+    chan1: u32 = 1,
 };
 
 pub fn makeKtxV(
@@ -189,48 +190,58 @@ pub fn makeKtx(
     var width: i32 = 0;
     var height: i32 = 0;
     var channel_n: i32 = 0;
-    const data_ptr = c.stbi_load_from_memory(buffer.ptr, @intCast(buffer.len), &width, &height, &channel_n, 0) orelse {
+    const data_ptr = c.stbi_load_from_memory(buffer.ptr, @intCast(buffer.len), &width, &height, &channel_n, 4) orelse {
         log.err("{s} {q}", .{ c.stbi_failure_reason(), path });
         std.process.exit(1);
     };
+    std.debug.assert(channel_n == 4);
     defer c.stbi_image_free(data_ptr);
-    const data = data_ptr[0..@intCast(width * height * channel_n * @sizeOf(u8))];
 
     const settings: Settings = switch (tex_type) {
         c.aiTextureType_BASE_COLOR,
         c.aiTextureType_EMISSIVE,
         => .{
-            .in_format = switch (channel_n) {
-                3 => .r8g8b8_srgb,
-                4 => .r8g8b8a8_srgb,
-                else => unreachable,
-            },
-            .bcn_format = .bc7_rgba,
+            .bcn_format = .bc7_srgb_block,
         },
         c.aiTextureType_NORMALS,
         => .{
-            .in_format = .r8g8b8_unorm,
-            .bcn_format = .bc5_rg,
-
+            .bcn_format = .bc5_unorm_block,
             .normal_map = true,
         },
         c.aiTextureType_GLTF_METALLIC_ROUGHNESS,
         c.aiTextureType_DIFFUSE_ROUGHNESS,
         => .{
-            .in_format = .r8g8b8_unorm,
-            .bcn_format = .bc5_rg,
-            .swizzle = .{ 'g', 'b', 'b', 'b' },
+            .bcn_format = .bc5_unorm_block,
+            .chan0 = 1,
+            .chan1 = 2,
         },
         c.aiTextureType_LIGHTMAP,
         => .{
-            .in_format = .r8g8b8_unorm,
-            .bcn_format = .bc4_r,
+            .bcn_format = .bc4_unorm_block,
         },
         else => unreachable,
     };
 
+    var params: bcn.Params = .{
+        .dxgi_format = switch (settings.bcn_format) {
+            .bc7_srgb_block => .bc7_unorm,
+            .bc5_unorm_block => .bc5_unorm,
+            .bc4_unorm_block => .bc4_unorm,
+            else => unreachable,
+        },
+        .bc45_channel0 = settings.chan0,
+        .bc45_channel1 = settings.chan1,
+    };
+    var size: u32 = undefined;
+    var handle: bcn.Handle = undefined;
+    var out: [*]const u8 = undefined;
+    if (!bcn.bcn_encode(&params, @intCast(width), @intCast(height), data_ptr, &size, &out, &handle)) {
+        return error.Encode;
+    }
+    defer bcn.bcn_free(handle);
+
     const ci: ktx.Texture.CreateInfo = .{
-        .vkFormat = @intFromEnum(settings.in_format),
+        .vkFormat = @intFromEnum(settings.bcn_format),
         .baseWidth = @intCast(width),
         .baseHeight = @intCast(height),
         .numDimensions = 2,
@@ -244,19 +255,7 @@ pub fn makeKtx(
     const texture: *ktx.Texture = try .create(&ci, .alloc_storage);
     defer texture.destroy();
 
-    try texture.setImageFromMemory(0, 0, 0, data);
-
-    var params: ktx.BasisParams = .{
-        .uastc = true,
-        .threadCount = 1,
-        .uastcRDO = true,
-        .uastcFlags = .{ .level = .veryslow, .favor_bc7_error = true },
-        .qualityLevel = 256,
-        .normalMap = settings.normal_map,
-        .inputSwizzle = settings.swizzle,
-    };
-    try texture.compressBasisEx(&params);
-    try texture.transcodeBasis(settings.bcn_format, .high_quality);
+    try texture.setImageFromMemory(0, 0, 0, out[0..size]);
     try texture.deflateZstd(22);
 
     const ktx_contents = try texture.writeToMemory();

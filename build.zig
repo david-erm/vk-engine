@@ -6,7 +6,7 @@ const Build = std.Build;
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const bake_optimize = b.option(std.builtin.OptimizeMode, "bake-optimize", "Optimization level for bake step binaries") orelse .Debug;
+    const bake_optimize = b.option(std.builtin.OptimizeMode, "bake-optimize", "Optimization level for bake step binaries") orelse .ReleaseFast;
 
     const vulkan_sdk = b.graph.environ_map.get("VULKAN_SDK") orelse {
         log.err("Could not find VulkanSDK. Try sourcing setup-env.sh", .{});
@@ -23,11 +23,6 @@ pub fn build(b: *std.Build) !void {
 
     //dependecies
     const zgltf = b.dependency("zgltf", .{});
-    const stb = b.dependency("stb", .{});
-    const mikkt = b.dependency("mikktspace", .{
-        .target = target,
-        .optimize = optimize,
-    });
 
     //project modules
     const vk = b.createModule(.{
@@ -42,7 +37,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
-    buildBake(b, bake_optimize, stb, ktx, mikkt.module("mikktspace"));
+    buildBake(b, bake_optimize, ktx);
 
     const c = b.addTranslateC(.{
         .root_source_file = b.addWriteFiles().add("c.h",
@@ -115,13 +110,17 @@ pub fn build(b: *std.Build) !void {
 pub fn buildBake(
     b: *std.Build,
     optimize: std.builtin.OptimizeMode,
-    stb: *Build.Dependency,
     ktx: *Build.Module,
-    mikkt: *Build.Module,
 ) void {
+    const stb = b.dependency("stb", .{});
+    const bc7enc = b.dependency("bc7enc_rdo", .{
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    const bc7enc_module = bc7enc.module("bc7enc_rdo-zig");
+
     const c_step = b.addTranslateC(.{
         .root_source_file = b.addWriteFiles().add("c.h",
-            // \\ #include <ktx.h>
             \\ #include <stb_image.h>
             \\ #include <assimp/cimport.h>
             \\ #include <assimp/cexport.h>
@@ -154,8 +153,7 @@ pub fn buildBake(
 
     bake.root_module.addImport("c", cmod);
     bake.root_module.addImport("ktx", ktx);
-    bake.root_module.addImport("mikktspace", mikkt);
-
+    bake.root_module.addImport("bcn", bc7enc_module);
     const bake_step = b.step("bake", "Bake assets");
 
     const models: []const []const u8 = &.{

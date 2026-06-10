@@ -14,6 +14,10 @@
 - COULD make VkImages reference counted to VkImageViews so explicit tracking is uneeded
 - mipmap gen in baker (prolly will need a vk instance (could enable doing cooler shit aswell ?)
 - mikktspace
+- drop ktx-software
+    - just use zstd straight up
+    - writing ktx2 not very hard?
+- meshoptimizer
 
 # GOAL:
 - start making abstractions
@@ -26,7 +30,6 @@
 - pub const <alias> = .val for enums
 - move to non c ktx parser thingy
 - intrusive free list downsides?
-- bc7enc_rdo wrapper/binds
 
 
 
