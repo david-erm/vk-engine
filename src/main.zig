@@ -173,7 +173,7 @@ pub fn main(init: std.process.Init) !void {
         log.info("Failed to init face", .{});
         return error.Face;
     }
-    const font_size = 64;
+    const font_size = 32;
     if (c.FT_Set_Pixel_Sizes(face, 0, font_size) != 0) @panic("");
 
     const atlas_size = 1024.0;
@@ -797,10 +797,11 @@ pub fn main(init: std.process.Init) !void {
 
                 vk.cmdBindPipeline(cb, .graphics, text_pipeline);
                 vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&text_quad.handle), &.{0});
-                const text = try std.fmt.allocPrint(a_frame, "frametimeg,: {d:.3}ms±😊", .{elasped / 1000});
 
                 //cant know
                 var pos: Vec2 = .{ .x = mouse_pos.x, .y = mouse_pos.y };
+                //TODO: new lines
+                const text = try std.fmt.allocPrint(a_frame, "frametimeg,: {d:.3}ms±😊\n {}, {}", .{ elasped / 1000, pos.x, pos.y });
                 const scale: f32 = 1;
                 for (text, 0..) |char, i| {
                     if (char == ' ') {

@@ -46,7 +46,6 @@ const gen_header: []const u8 =
     \\const std = @import("std");
     \\const vk = @import("vk");
     \\pub const spirv align(@alignOf(u32)) = @embedFile("spirv").*;
-    \\
 ;
 
 pub fn main(init: std.process.Init) !void {
@@ -60,11 +59,11 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const reflection_json = cwd.openFile(io, args[1], .{}) catch |err| {
-        fatal("unable to create file {s} : {s}", .{ args[1], @errorName(err) });
+        fatal("unable to create file {s} : {t}", .{ args[1], err });
     };
     defer reflection_json.close(io);
     const shader_gen = cwd.createFile(io, args[2], .{}) catch |err| {
-        fatal("unable to create file {s} : {s}", .{ args[2], @errorName(err) });
+        fatal("unable to create file {s} : {t}", .{ args[2], err });
     };
     defer shader_gen.close(io);
 
