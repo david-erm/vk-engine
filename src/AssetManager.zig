@@ -1,9 +1,10 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const log = std.log.scoped(.AssetManager);
 
-pub const c = @import("c");
 const Gltf = @import("zgltf").Gltf;
+pub const c = @import("c");
 const vk = @import("vk");
 
 const ktx = @import("ktx.zig");
@@ -13,8 +14,6 @@ const zkf = @import("zkf.zig");
 const ObjectPool = zkf.ObjectPool;
 const Context = zkf.Context;
 const Buffer = zkf.Buffer;
-
-const log = std.log.scoped(.AssetManager);
 
 const AssetManager = @This();
 

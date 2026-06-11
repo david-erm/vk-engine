@@ -37,10 +37,23 @@ pub const Vec4 = extern struct {
         return .{ .x = v.x, .y = v.y, .z = v.z, .w = w };
     }
 };
+
+pub fn Vec(T: type, len: u32) type {
+    const field_names: []const []const u8 = &.{ "x", "y", "z", "w" };
+    return @Struct(.@"extern", null, field_names[0..len], &@splat(T), &@splat(.{}));
+}
+
+test {
+    const v1: Vec(f32, 3) = .{ .x = 1.0, .y = 2.0, .z = 2.0 };
+    const v2: Vec(f32, 3) = .{ .x = -1.0, .y = -2.0, .z = -2.0 };
+    const v3 = v1.add(v2);
+    std.debug.print("{}", .{v3});
+}
+
 pub const Vec2 = extern struct { x: f32 = 0, y: f32 = 0 };
 pub const IVec2 = extern struct { x: i32 = 0, y: i32 = 0 };
 pub const UVec2 = extern struct { x: u32 = 0, y: u32 = 0 };
-pub const Vertex = extern struct { pos: Vec3, norm: Vec3, uv: Vec2 };
+// pub const Vertex = extern struct { pos: Vec3, norm: Vec3, uv: Vec2 };
 pub const Mat4 = extern struct {
     data: [4][4]f32,
 
@@ -172,8 +185,7 @@ test "sanity check" {
 
     const v: Vec3 = .{ .x = 1 };
     const v2 = v.rotate(q3);
-
-    std.debug.print("{}\n", .{v2});
+    _ = v2;
 }
 
 pub const Context = struct {
@@ -268,7 +280,6 @@ pub const Context = struct {
                 .descriptorBindingPartiallyBound = .True,
                 //turned off, was used at some point
                 .descriptorBindingUpdateUnusedWhilePending = .False,
-                .descriptorBindingVariableDescriptorCount = .False,
             };
             const enableVK13Features: vk.PhysicalDeviceVulkan13Features = .{
                 .pNext = &enableVK12Features,
@@ -283,6 +294,7 @@ pub const Context = struct {
                 .queueCreateInfoCount = 1,
                 .pQueueCreateInfos = @ptrCast(&queueCI),
                 .enabledExtensionCount = 1,
+                //TODO: should device extensions be like this? integrate with build
                 .ppEnabledExtensionNames = &.{"VK_KHR_swapchain"},
                 .pEnabledFeatures = &enableVKFeatures,
             }, null, &ctx.device);
@@ -664,67 +676,12 @@ pub const Camera = struct {
     }
 };
 
-pub const LoadedMesh = struct {
-    indices: std.ArrayList(u32),
-    vertices: std.ArrayList(Vertex),
-};
-
-pub const Texture = struct {
-    alon: vma.Allocation,
-    image: vk.Image,
-    view: vk.ImageView,
-    sampler: vk.Sampler,
-};
-
 pub const FileDataCtx = struct {
     io: *std.Io,
     arena: std.mem.Allocator,
     mmaps: std.ArrayList(std.Io.File.MemoryMap),
     count: usize = 0,
 };
-
-pub fn loadObj(arena: std.mem.Allocator, io: *std.Io, path: [*:0]const u8) !LoadedMesh {
-    var attrib: c.tinyobj_attrib_t = undefined;
-    var shapes_num: usize = 0;
-    var shapes: ?[*]c.tinyobj_shape_t = null;
-    //not doing shi with these
-    var materials_num: usize = 0;
-    var materials: ?[*]c.tinyobj_material_t = null;
-
-    var ctx: FileDataCtx = .{
-        .io = io,
-        .arena = arena,
-        .mmaps = .empty,
-    };
-
-    const ret = c.tinyobj_parse_obj(&attrib, &shapes, &shapes_num, &materials, &materials_num, path, get_file_data, &ctx, c.TINYOBJ_FLAG_TRIANGULATE);
-    for (ctx.mmaps.items) |*mmap| {
-        mmap.destroy(io.*);
-    }
-    ctx.mmaps.deinit(ctx.arena);
-    if (ret != 0) @panic("loading obj failed");
-
-    var vertices: std.ArrayList(Vertex) = .empty;
-    var indices: std.ArrayList(u32) = .empty;
-    for (0..attrib.num_faces, attrib.faces) |i, face| {
-        const v_start: usize = @intCast(face.v_idx * 3);
-        const vn_start: usize = @intCast(face.vn_idx * 3);
-        const vt_start: usize = @intCast(face.vt_idx * 2);
-
-        const vert: Vertex = .{
-            .pos = .{ .x = attrib.vertices[v_start], .y = -attrib.vertices[v_start + 1], .z = attrib.vertices[v_start + 2] },
-            .norm = .{ .x = attrib.normals[vn_start], .y = -attrib.normals[vn_start + 1], .z = attrib.normals[vn_start + 2] },
-            .uv = .{ .x = attrib.texcoords[vt_start], .y = 1.0 - attrib.texcoords[vt_start + 1] },
-        };
-        try vertices.append(arena, vert);
-        try indices.append(arena, @intCast(i));
-    }
-    c.tinyobj_attrib_free(&attrib);
-    c.tinyobj_materials_free(materials, materials_num);
-    c.tinyobj_shapes_free(shapes, shapes_num);
-
-    return .{ .indices = indices, .vertices = vertices };
-}
 
 pub fn get_file_data(ioparam: ?*anyopaque, filename: [*c]const u8, _: i32, _: ?[*]const u8, buf: ?*?[*]u8, len: ?*usize) callconv(.c) void {
     if (filename == null) {
