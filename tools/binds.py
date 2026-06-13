@@ -1,33 +1,54 @@
 from vulkan_object import get_vulkan_object
 import re
+import argparse
+
+enabled = []
+outfile = None
+
+def main():
+    global outfile
+    parser  = argparse.ArgumentParser()
+    parser.add_argument("--version", type=str, help="Vulkan version")
+    parser.add_argument("--instance_extensions", nargs='*', type=str, help="Instance Extensions to generate bindings for")
+    parser.add_argument("--device_extensions", nargs='*', type=str, help="Device extensions to generate bindings for")
+    parser.add_argument("--file", required=True, type=str, help="Output file path")
+
+    args = parser.parse_args()
+    if args.version:
+        major, minor = args.version.split('.')
+        assert (major == '1')
+        for i in range(0, int(minor) + 1):
+            enabled.append(f"VK_VERSION_{major}_{i}")
+    if args.instance_extensions:
+        enabled.extend(args.instance_extensions)
+    if args.device_extensions:
+        enabled.extend(args.device_extensions)
+
+    outfile = open(args.file, "w")
+
+
+if __name__ == "__main__":
+    main()
+
 
 vk = get_vulkan_object()
+global_cmds = ['vkEnumerateInstanceVersion', 'vkEnumerateInstanceExtensionProperties', 'vkEnumerateInstanceLayerProperties', 'vkCreateInstance']
+zig_keywords = ['and', 'or', 'inline', 'opaque', 'error']
 
-enabled = [
-    "VK_VERSION_1_0",
-    "VK_VERSION_1_1",
-    "VK_VERSION_1_2",
-    "VK_VERSION_1_3",
-    "VK_KHR_swapchain",
-    "VK_KHR_surface",
-    "VK_EXT_debug_utils",
-]
-handle_switch = ""
-
-keywords = ['and', 'or', 'inline', 'opaque', 'error']
 
 out = ""
 # namespaces
 table = ""
 table_ns = "table"
-
-global_cmds = ['vkEnumerateInstanceVersion', 'vkEnumerateInstanceExtensionProperties', 'vkEnumerateInstanceLayerProperties', 'vkCreateInstance']
 glob = ""
 global_ns = "global"
 instance = ""
 instance_ns = "instance"
 device = ""
 device_ns = "device"
+
+handle_switch = ""
+
 
 pfnn = ""
 
@@ -61,13 +82,37 @@ types["VkRemoteAddressNV"] = "?*anyopaque"
 
 pascal_to_words = re.compile(r"[A-Z][a-z]+|[A-Z]+(?![a-z])|[0-9]+")
 
-
-def check_enabled(thing):
-    if thing.definingRequirements == {}:
+def check_alias_enabled(requirements):
+    if requirements == {}:
         return True
     else:
-        exists = any(key in thing.definingRequirements for key in enabled) or any(item in thing.extensions for item in enabled)
+        exists = any(key in requirements for key in enabled)
         return exists
+
+def check_enabled(thing):
+    names = []
+    if thing.definingRequirements == {}:
+        names.append(thing.name)
+    for macro in enabled:
+        if macro in thing.definingRequirements:
+            if thing.definingRequirements[macro] is None:
+                names.append(thing.name)
+            elif thing.definingRequirements[macro] in enabled:
+                names.append(thing.name)
+
+    if hasattr(thing, "aliases"):
+        for alias in thing.aliases:
+            requirements = None
+            if alias in vk.aliasFlagRequirements:
+                requirements = vk.aliasFlagRequirements[alias]
+            elif alias in vk.aliasFieldRequirements:
+                requirements = vk.aliasFieldRequirements[alias]
+            elif alias in vk.aliasTypeRequirements:
+                requirements = vk.aliasTypeRequirements[alias]
+            if requirements and check_alias_enabled(requirements):
+                names.append(alias)
+
+    return names
 
 
 def make_pascal(name, words):
@@ -113,7 +158,7 @@ def make_snake(name, words):
         first = False
     if new[0].isdigit():
         new = '@"' + new + '"'
-    elif new in keywords:
+    elif new in zig_keywords:
         new = '@"' + new + '"'
     return new
 
@@ -138,48 +183,64 @@ def zig_flag(flag):
     global out
     if flag.name in types:
         return
-    if not check_enabled(flag):
+    names = check_enabled(flag)
+    if names == []:
         return
 
-    name = flag.name[2:]
+    name = names[0][2:]
     types[flag.name] = name
-    for alias in flag.aliases:
-        types[alias] = name
+    for alias in names[1:]:
+        types[alias] = alias[2:]
+        out += f'pub const {alias[2:]} = {name}; //alias\n'
 
     if flag.bitmaskName:
-        zig_bitmask(vk.bitmasks[flag.bitmaskName], name)
+        bitmask = vk.bitmasks[flag.bitmaskName]
+        zig_bitmask(bitmask)
     else:
         out += f"pub const {name} = u32; //unused flag type\n"
 
 
-def zig_bitmask(bitmask, newname):
+def zig_bitmask(bitmask):
     global out
     if bitmask.name in types:
         return
-    if not check_enabled(bitmask):
+    names = check_enabled(bitmask)
+    if names == []:
         return
 
+    newname = names[0].replace("Bit", "")[2:]
     types[bitmask.name] = newname
-    for alias in bitmask.aliases:
-        types[alias] = newname
+    for alias in names[1:]:
+        flag = alias.replace("Bit", "")
+        types[alias] = flag[2:]
 
     out += f"pub const {newname} = packed struct(u{bitmask.bitWidth}) {{\n"
-    words = re.findall(pascal_to_words, bitmask.name[2:])
+    words = re.findall(pascal_to_words, names[0][2:])
     current_bit = 0
     padding_num = 0
+    fields = ""
     for bit in sorted(bitmask.flags, key=lambda x: (x.bitpos is None, x.bitpos)):
-        if not check_enabled(bit):
+        names = check_enabled(bit)
+        if names == []:
             continue
-        if bit.zero or bit.bitpos is None:
+        name = names[0]
+        if bit.bitpos is None:
+            if bit.zero:
+                fields = f"\tpub const {make_snake(name, words.copy())}: @This() = .{{}};\n" + fields
+            if bit.multiBit:
+                # TODO: not bitcast the int
+                fields = f"\tpub const {make_snake(name, words.copy())}: @This() = @bitCast({bit.value});\n" + fields
             continue
+
         if bit.bitpos != current_bit:
-            out += f"\t_padding{padding_num}: u{bit.bitpos - current_bit} = 0,\n"
+            fields += f"\t_padding{padding_num}: u{bit.bitpos - current_bit} = 0,\n"
             current_bit += bit.bitpos - current_bit
             padding_num += 1
-        out += "\t" + make_snake(bit.name, words.copy()) + ": bool = false,\n"
+        fields += "\t" + make_snake(name, words.copy()) + ": bool = false,\n"
         current_bit += 1
     if current_bit < bitmask.bitWidth:
-        out += f"\t_padding{padding_num}: u{bitmask.bitWidth - current_bit} = 0,\n"
+        fields += f"\t_padding{padding_num}: u{bitmask.bitWidth - current_bit} = 0,\n"
+    out += fields
     out += "};\n"
 
 
@@ -187,31 +248,39 @@ def zig_enum(enum):
     global out
     if enum.name in types:
         return
-    if not check_enabled(enum):
+    names = check_enabled(enum)
+    if names == []:
         return
+    name = names[0]
+    for alias in names[1:]:
+        out += f'pub const {alias[2:]} = {name};\n'
+        types[alias] = alias[2:]
 
-    wrds = re.findall(pascal_to_words, enum.name[2:])
-    types[enum.name] = enum.name[2:]
-
-    for alias in enum.aliases:
-        types[alias] = enum.name[2:]
+    wrds = re.findall(pascal_to_words, name)
+    types[name] = name[2:]
 
     if enum.name == "VkResult":
         out += f'pub const {enum.name[2:]}Err = error {{\n'
         for field in enum.fields:
-            if not check_enabled(field) or field.value == 0:
+            fields = check_enabled(field)
+            if fields == [] or field.value == 0:
                 continue
-            newname = make_snake(field.name, wrds.copy())
+            newname = make_snake(fields[0], wrds.copy())
             out += "\t" + newname + ",\n"
         out += "};\n"
 
     out += f"pub const {enum.name[2:]} = enum(i{enum.bitWidth}) {{\n"
+    contents = ""
     for field in enum.fields:
-        if not check_enabled(field):
+        fields = check_enabled(field)
+        if fields == []:
             continue
-        newname = make_snake(field.name, wrds.copy())
-        vals[field.name] = newname
-        out += "\t" + newname + f" = {field.value},\n"
+        newname = make_snake(fields[0], wrds.copy())
+        vals[fields[0]] = newname
+        for alias in fields[1:]:
+            contents = f"\tpub const {make_snake(alias, wrds.copy())}: @This() = .{newname}; //alias\n"
+        contents += "\t" + newname + f" = {field.value},\n"
+    out += contents
     out += "};\n"
 
 
@@ -255,13 +324,16 @@ def zig_handle(handle):
     global handle_switch
     if handle.name in types:
         return
-    if not check_enabled(handle):
+    names = check_enabled(handle)
+    if names == []:
         return
 
-    newname = handle.name[2:]
+    newname = names[0][2:]
     types[handle.name] = newname
-    for alias in handle.aliases:
-        types[alias] = newname
+    for alias in names[1:]:
+        out += f'pub const {alias} = {newname};\n'
+        types[alias] = alias[2:]
+
     out += f"const {newname}_t = opaque{{}};\n"
     out  += f"pub const {newname} = *{newname}_t;\n"
 
@@ -272,8 +344,6 @@ def parse_type(type):
     if type.type not in types:
         if type.type in vk.enums:
             zig_enum(vk.enums[type.type])
-        else:
-            zig_struct(vk.structs[type.type])
 
     ret = ""
 
@@ -348,13 +418,10 @@ def get_default(type):
 
 
 def handle_member(mem, st):
+    if mem.type == "VkStructureType":
+        return ""
+
     ret = "\t"
-    if mem.type[2:] == "StructureType":
-        ret += "sType: StructureType"
-        if st.sType:
-            ret += f" = .{vals[st.sType]}"
-        ret += ",\n"
-        return ret
 
     if mem.type in vk.structs:
         zig_struct(vk.structs[mem.type])
@@ -371,23 +438,33 @@ def handle_member(mem, st):
 
 def zig_struct(st):
     global out
-    if st.name in types:
+    if st.name in types or st.name == "VkStructureType":
         return
-    if not check_enabled(st):
+    names = check_enabled(st)
+    if names == []:
         return
 
     ret = ""
 
-    ret += "pub const " + st.name[2:] + " = extern "
+    name = names[0][2:]
+    types[st.name] = name
+    for alias in names[1:]:
+        ret += f'pub const {alias[2:]} = {name}; //alias\n'
+        types[alias] = alias[2:]
+
+    ret += "pub const " + name + " = extern "
     if st.union:
         ret += "union {\n"
     else:
         ret += "struct {\n"
 
-    types[st.name] = st.name[2:]
-
-    for alias in st.aliases:
-        types[alias] = st.name[2:]
+    if st.sType:
+        val = 0
+        for field in vk.enums["VkStructureType"].fields:
+            if field.name == st.sType:
+                val = field.value
+        ret += f'\tsType: i32 = {val},\n'
+        assert st.members[0].type == "VkStructureType"
 
     for member in st.members:
         ret += handle_member(member, st)
@@ -420,6 +497,8 @@ def zig_cmd(cmd):
     types[cmd.name] = name
     if cmd.alias:
         types[cmd.alias] = name
+
+    cmd.alias
 
     params = ''
     first = True
@@ -499,55 +578,60 @@ for cmd in vk.commands.values():
 
 
 # start genning binds
-print('const std = @import("std");')
-print("pub fn makeApiVersion(variant: u32, major: u32, minor: u32, patch: u32) u32 { return variant << 29 | major << 22 | minor << 12 | patch;}")
-print("pub const Bool = enum(u32) { False, True };")
-print("pub const DeviceSize = u64;")
-print("pub const DeviceAddress = enum(u64) { _ };")
-print("pub fn makeError(comptime err: type, ret: anytype) err!void {")
-print("    switch (ret) {")
-print("        @enumFromInt(0) => {")
-print("            return;")
-print("        },")
-print("        inline else => |t| {")
-print("            return @field(err, @tagName(t));")
-print("        },")
-print("    }")
-print("}")
-print('pub fn load(proc: pfn.vkGetInstanceProcAddr) void {')
-print('    inline for (@typeInfo(table.global).@"struct".decl_names) |field| {')
-print('        @field(table.global, field) = @ptrCast(proc(null, field.ptr));')
-print('        table.instance.vkGetInstanceProcAddr = proc;')
-print('    }')
-print('}')
-print('pub fn loadInstance(instance: Instance) void {')
-print('    inline for (@typeInfo(table.instance).@"struct".decl_names) |field| {')
-print('        @field(table.instance, field) = @ptrCast(table.instance.vkGetInstanceProcAddr(instance, field.ptr));')
-print('        table.device.vkGetDeviceProcAddr = @ptrCast(table.instance.vkGetInstanceProcAddr(instance, "vkGetDeviceProcAddr"));')
-print('    }')
-print('}')
-print('pub fn loadDevice(device: Device) void {')
-print('    inline for (@typeInfo(table.device).@"struct".decl_names) |field| {')
-print('        @field(table.device, field) = @ptrCast(table.device.vkGetDeviceProcAddr(device, field.ptr));')
-print('    }')
-print('}')
+header = """const std = @import("std");
+pub fn makeApiVersion(variant: u32, major: u32, minor: u32, patch: u32) u32 { return variant << 29 | major << 22 | minor << 12 | patch;}
+pub const Bool = enum(u32) { False, True };
+pub const DeviceSize = u64;
+pub const DeviceAddress = enum(u64) { _ };
+pub fn makeError(comptime err: type, ret: anytype) err!void {
+    switch (ret) {
+        @enumFromInt(0) => {
+            return;
+        },
+        inline else => |t| {
+            return @field(err, @tagName(t));
+        },
+    }
+}
+pub fn load(proc: pfn.vkGetInstanceProcAddr) void {
+    inline for (@typeInfo(table.global).@"struct".decl_names) |field| {
+        @field(table.global, field) = @ptrCast(proc(null, field.ptr));
+        table.instance.vkGetInstanceProcAddr = proc;
+    }
+}
+pub fn loadInstance(instance: Instance) void {
+    inline for (@typeInfo(table.instance).@"struct".decl_names) |field| {
+        @field(table.instance, field) = @ptrCast(table.instance.vkGetInstanceProcAddr(instance, field.ptr));
+        table.device.vkGetDeviceProcAddr = @ptrCast(table.instance.vkGetInstanceProcAddr(instance, "vkGetDeviceProcAddr"));
+    }
+}
+pub fn loadDevice(device: Device) void {
+    inline for (@typeInfo(table.device).@"struct".decl_names) |field| {
+        @field(table.device, field) = @ptrCast(table.device.vkGetDeviceProcAddr(device, field.ptr));
+    }
+}
+"""
 if "VK_EXT_debug_utils" in enabled:
-    print('pub fn nameHandle(device: Device, handle: anytype, name: [*:0]const u8) !void {')
-    print('    const handle_type: ObjectType = switch (@TypeOf(handle)) {')
-    print(handle_switch)
-    print('        else => @compileError("Not a VK Handle"),')
-    print('    };')
-    print('    const ci: DebugUtilsObjectNameInfoEXT = .{')
-    print('        .objectHandle = @intFromPtr(handle),')
-    print('        .pObjectName = name,')
-    print('        .objectType = handle_type,')
-    print('    };')
-    print('    try setDebugUtilsObjectNameEXT(device, &ci);')
-    print('}')
-print(out)
-print(f'pub const {table_ns} = struct {{')
-print(f'\tpub const {global_ns} = struct {{{glob}\t}};')
-print(f'\tpub const {instance_ns} = struct {{{instance}\t}};')
-print(f'\tpub const {device_ns} = struct {{{device}\t}};')
-print('};')
-print('pub const pfn = struct {\n ' + pfnn + '};')
+    header += f"""
+    pub fn nameHandle(device: Device, handle: anytype, name: [*:0]const u8) !void {{
+        const handle_type: ObjectType = switch (@TypeOf(handle)) {{
+    {handle_switch}
+            else => @compileError("Not a VK Handle"),
+        }};
+        const ci: DebugUtilsObjectNameInfoEXT = .{{
+            .objectHandle = @intFromPtr(handle),
+            .pObjectName = name,
+            .objectType = handle_type,
+        }};
+        try setDebugUtilsObjectNameEXT(device, &ci);
+    }}
+    """
+
+print(header, file=outfile)
+print(out, file=outfile)
+print(f'pub const {table_ns} = struct {{', file=outfile)
+print(f'\tpub const {global_ns} = struct {{{glob}\t}};', file=outfile)
+print(f'\tpub const {instance_ns} = struct {{{instance}\t}};', file=outfile)
+print(f'\tpub const {device_ns} = struct {{{device}\t}};', file=outfile)
+print('};', file=outfile)
+print('pub const pfn = struct {\n ' + pfnn + '};', file=outfile)

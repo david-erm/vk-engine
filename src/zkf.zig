@@ -1,11 +1,13 @@
 const std = @import("std");
 const Io = std.Io;
+
 pub const c = @import("c");
 const vk = @import("vk");
 const gltf = @import("zgltf").Gltf;
 const sdl = @import("sdl.zig");
 const vma = @import("vma.zig");
 const ktx = @import("ktx.zig");
+const vk_extensions = @import("vk_extensions");
 
 pub const AssetManager = @import("AssetManager.zig");
 
@@ -216,7 +218,9 @@ pub const Context = struct {
             var extensions: std.ArrayList([*:0]const u8) = .empty;
 
             try extensions.appendSlice(arena, platform_extensions);
-            try extensions.append(arena, "VK_EXT_debug_utils");
+            for (vk_extensions.instance_extensions) |ext| {
+                try extensions.append(arena, ext.ptr);
+            }
 
             const app_info: vk.ApplicationInfo = .{
                 .apiVersion = vk.makeApiVersion(0, 1, 3, 0),
@@ -289,13 +293,16 @@ pub const Context = struct {
             const enableVKFeatures: vk.PhysicalDeviceFeatures = .{
                 .samplerAnisotropy = .True,
             };
+            var extensions: std.ArrayList([*:0]const u8) = .empty;
+            for (vk_extensions.device_extensions) |ext| {
+                try extensions.append(arena, ext.ptr);
+            }
             try vk.createDevice(ctx.pdevice, &.{
                 .pNext = &enableVK13Features,
                 .queueCreateInfoCount = 1,
                 .pQueueCreateInfos = @ptrCast(&queueCI),
                 .enabledExtensionCount = 1,
-                //TODO: should device extensions be like this? integrate with build
-                .ppEnabledExtensionNames = &.{"VK_KHR_swapchain"},
+                .ppEnabledExtensionNames = extensions.items.ptr,
                 .pEnabledFeatures = &enableVKFeatures,
             }, null, &ctx.device);
             vk.loadDevice(ctx.device);

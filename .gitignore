@@ -1,7 +1,11 @@
+# renderdocs
 debug.cap
-binding_notes.txt
+
+# zig
 zig-out
 zig-pkg
 .zig-cache
+
+# not pushing assets to git
 assets
 tinyobj_loader_c.h

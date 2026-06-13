@@ -1,7 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
-const log = std.log.scoped(.build);
 const Build = std.Build;
+const log = std.log.scoped(.build);
 
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
@@ -13,6 +13,24 @@ pub fn build(b: *std.Build) !void {
         return;
     };
     log.info("VulkanSDK at: {s}", .{vulkan_sdk});
+
+    //vulkan binds
+    const instance_extensions: []const [:0]const u8 = &.{
+        "VK_KHR_surface",
+        "VK_EXT_debug_utils",
+    };
+    const device_extensions: []const [:0]const u8 = &.{
+        "VK_KHR_swapchain",
+    };
+    const python_path = b.findProgramLazy(.{ .names = &.{ "python", "python3" } });
+    const python = b.addRunFile(python_path);
+    python.addFileArg(b.path("tools/binds.py"));
+    python.addArg("--version=1.3");
+    python.addArg("--instance_extensions");
+    python.addArgs(instance_extensions);
+    python.addArg("--device_extensions");
+    python.addArgs(device_extensions);
+    const vk_binds = python.addPrefixedOutputFileArg("--file=", "vk.zig");
 
     //system includes
     const vulkan = b.graph.cwdRelativePath(b.fmt("{s}/include", .{vulkan_sdk}));
@@ -26,7 +44,7 @@ pub fn build(b: *std.Build) !void {
 
     //project modules
     const vk = b.createModule(.{
-        .root_source_file = b.path("src/vk.zig"),
+        .root_source_file = vk_binds,
         .target = target,
         .optimize = optimize,
     });
@@ -91,6 +109,10 @@ pub fn build(b: *std.Build) !void {
             },
         }),
     });
+    const vk_extensions = b.addOptions();
+    vk_extensions.addOption([]const [:0]const u8, "instance_extensions", instance_extensions);
+    vk_extensions.addOption([]const [:0]const u8, "device_extensions", device_extensions);
+    exe.root_module.addOptions("vk_extensions", vk_extensions);
 
     b.installArtifact(exe);
 
