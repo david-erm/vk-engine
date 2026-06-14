@@ -1,6 +1,4 @@
 # WORK: 
-- integrate bindgen to build system. extensions decided at build time.
-    - maybe i need to allow pfn to be null? if i simply remove the extension funtions stuff will not compile.
 - generate slang structs from zig structs
 - maybe create system to create image view from imageHandle 
 - make POSE lib for shaders
@@ -28,8 +26,6 @@
 # IDEA:
 - separate type definitions into its own module so that generated files can consume them?
 - doing collisions via simpler meshes 
-- freetype harfbuzz for real font renderind at some point // maybe can cope with only freetype? 
-- pub const <alias> = .val for enums
 - move to non c ktx parser thingy
 - intrusive free list downsides?
 - 1 canonical view of an image

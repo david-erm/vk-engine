@@ -89,6 +89,31 @@ pub fn main(init: std.process.Init) !void {
     var rctx: zkf.RenderContext = try .init(&ctx, a_static, 1920, 1080, "testing", max_frames, &asset);
     defer rctx.deinit(&ctx, &asset);
 
+    var offscreen_image_ci: vk.ImageCreateInfo = .{
+        .imageType = .@"2d",
+        .format = .r16g16b16a16_unorm,
+        .extent = .{ .width = rctx.windowsize.width, .height = rctx.windowsize.height, .depth = 1 },
+        .samples = .{ .@"1" = true },
+        .usage = .{ .transfer_src = true, .color_attachment = true, .storage = true },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+    };
+    var offscreen = try asset.allocImage(&ctx, offscreen_image_ci);
+    defer asset.freeImage(&ctx, offscreen);
+    try vk.nameHandle(ctx.device, asset.getImage(offscreen), "Offscreen Render");
+    var offscreen_view_ci: vk.ImageViewCreateInfo = .{
+        .image = asset.getImage(offscreen),
+        .viewType = .@"2d",
+        .format = .r16g16b16a16_unorm,
+        .subresourceRange = .{
+            .aspectMask = .{ .color = true },
+            .layerCount = 1,
+            .levelCount = 1,
+        },
+    };
+    var offscreen_view = try asset.allocStorageImage(&ctx, offscreen_view_ci);
+    defer asset.freeStorageImage(&ctx, offscreen_view);
+
     var commandPool: vk.CommandPool = undefined;
     var command_buffers: [max_frames]vk.CommandBuffer = undefined;
     defer vk.destroyCommandPool(ctx.device, commandPool, null);
@@ -395,7 +420,7 @@ pub fn main(init: std.process.Init) !void {
         };
         const render_ci: vk.PipelineRenderingCreateInfo = .{
             .colorAttachmentCount = 1,
-            .pColorAttachmentFormats = @ptrCast(&rctx.sc_format),
+            .pColorAttachmentFormats = &.{.r16g16b16a16_unorm},
             .depthAttachmentFormat = rctx.depth_format,
         };
         const blend_attachment: vk.PipelineColorBlendAttachmentState = .{ .colorWriteMask = @bitCast(@as(u32, 0xF)) };
@@ -444,7 +469,7 @@ pub fn main(init: std.process.Init) !void {
         };
         const render_ci: vk.PipelineRenderingCreateInfo = .{
             .colorAttachmentCount = 1,
-            .pColorAttachmentFormats = @ptrCast(&rctx.sc_format),
+            .pColorAttachmentFormats = &.{.r16g16b16a16_unorm},
             .depthAttachmentFormat = .d32_sfloat_s8_uint,
         };
         const blend_attachment: vk.PipelineColorBlendAttachmentState = .{
@@ -482,7 +507,7 @@ pub fn main(init: std.process.Init) !void {
         };
         const render_ci: vk.PipelineRenderingCreateInfo = .{
             .colorAttachmentCount = 1,
-            .pColorAttachmentFormats = @ptrCast(&rctx.sc_format),
+            .pColorAttachmentFormats = &.{.r16g16b16a16_unorm},
             .depthAttachmentFormat = .d32_sfloat_s8_uint,
         };
         const blend_attachment: vk.PipelineColorBlendAttachmentState = .{ .colorWriteMask = @bitCast(@as(u32, 0xF)) };
@@ -707,29 +732,43 @@ pub fn main(init: std.process.Init) !void {
         {
             try vk.beginCommandBuffer(cb, &.{ .flags = .{ .one_time_submit = true } });
 
-            const output_barriers: [2]vk.ImageMemoryBarrier2 = .{ .{
-                .srcStageMask = .{ .compute_shader = true, .color_attachment_output = true },
-                .srcAccessMask = .{},
-                .dstStageMask = .{ .color_attachment_output = true },
-                .dstAccessMask = .{ .color_attachment_read = true, .color_attachment_write = true },
-                .oldLayout = .undefined,
-                .newLayout = .attachment_optimal,
-                .image = rctx.sc_imgs[swapchain_index],
-                .subresourceRange = .{ .aspectMask = .{ .color = true }, .levelCount = 1, .layerCount = 1 },
-            }, .{
-                .srcStageMask = .{ .late_fragment_tests = true },
-                .srcAccessMask = .{ .depth_stencil_attachment_write = true },
-                .dstStageMask = .{ .early_fragment_tests = true },
-                .dstAccessMask = .{ .depth_stencil_attachment_write = true },
-                .oldLayout = .undefined,
-                .newLayout = .attachment_optimal,
-                .image = asset.getImage(rctx.depth),
-                .subresourceRange = .{ .aspectMask = .{ .depth = true, .stencil = true }, .levelCount = 1, .layerCount = 1 },
-            } };
-            vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 2, .pImageMemoryBarriers = &output_barriers });
+            // generate both barriers and rendering attachment info with some renderer call?
+            const output_barriers: [3]vk.ImageMemoryBarrier2 = .{
+                .{
+                    .srcStageMask = .{ .compute_shader = true, .color_attachment_output = true },
+                    .srcAccessMask = .{},
+                    .dstStageMask = .{ .color_attachment_output = true },
+                    .dstAccessMask = .{ .color_attachment_read = true, .color_attachment_write = true },
+                    .oldLayout = .undefined,
+                    .newLayout = .attachment_optimal,
+                    .image = asset.getImage(offscreen),
+                    .subresourceRange = .{ .aspectMask = .{ .color = true }, .levelCount = 1, .layerCount = 1 },
+                },
+                .{
+                    .srcStageMask = .{ .blit = true },
+                    .srcAccessMask = .{},
+                    .dstStageMask = .{ .blit = true },
+                    .dstAccessMask = .{ .transfer_write = true },
+                    .oldLayout = .undefined,
+                    .newLayout = .general,
+                    .image = rctx.sc_imgs[swapchain_index],
+                    .subresourceRange = .{ .aspectMask = .{ .color = true }, .levelCount = 1, .layerCount = 1 },
+                },
+                .{
+                    .srcStageMask = .{ .late_fragment_tests = true },
+                    .srcAccessMask = .{ .depth_stencil_attachment_write = true },
+                    .dstStageMask = .{ .early_fragment_tests = true },
+                    .dstAccessMask = .{ .depth_stencil_attachment_write = true },
+                    .oldLayout = .undefined,
+                    .newLayout = .attachment_optimal,
+                    .image = asset.getImage(rctx.depth),
+                    .subresourceRange = .{ .aspectMask = .{ .depth = true, .stencil = true }, .levelCount = 1, .layerCount = 1 },
+                },
+            };
+            vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 3, .pImageMemoryBarriers = &output_barriers });
 
             const color_attach_info: vk.RenderingAttachmentInfo = .{
-                .imageView = asset.getStorageImage(rctx.sc_img_views[swapchain_index]),
+                .imageView = asset.getStorageImage(offscreen_view),
                 .imageLayout = .attachment_optimal,
                 .loadOp = .clear,
                 .storeOp = .store,
@@ -836,7 +875,7 @@ pub fn main(init: std.process.Init) !void {
             vk.cmdBindPipeline(cb, .compute, boxblur_pipeline);
             vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&asset.descriptor_set), 0, undefined);
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 0, 8, @ptrCast(&mouse_pos));
-            vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 8, 4, @ptrCast(&rctx.sc_img_views[swapchain_index]));
+            vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 8, 4, @ptrCast(&offscreen_view));
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 12, 4, &.{ 0, 0, 0, 0 });
             const compute_barrier1: vk.ImageMemoryBarrier2 = .{
                 .srcStageMask = .{ .color_attachment_output = true },
@@ -845,7 +884,7 @@ pub fn main(init: std.process.Init) !void {
                 .dstAccessMask = .{ .shader_storage_read = true, .shader_storage_write = true },
                 .oldLayout = .attachment_optimal,
                 .newLayout = .general,
-                .image = rctx.sc_imgs[swapchain_index],
+                .image = asset.getImage(offscreen),
                 .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
             };
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = @ptrCast(&compute_barrier1) });
@@ -853,10 +892,45 @@ pub fn main(init: std.process.Init) !void {
 
             vk.cmdEndDebugUtilsLabelEXT(cb);
 
-            const present_barrier: vk.ImageMemoryBarrier2 = .{
+            vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Blit" });
+            const transfer_barrier: vk.ImageMemoryBarrier2 = .{
                 .srcStageMask = .{ .compute_shader = true },
                 .srcAccessMask = .{ .shader_storage_write = true },
-                .dstStageMask = .{ .compute_shader = true },
+                .dstStageMask = .{ .blit = true },
+                .dstAccessMask = .{ .transfer_read = true },
+                .oldLayout = .general,
+                .newLayout = .transfer_src_optimal,
+                .image = asset.getImage(offscreen),
+                .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
+            };
+            vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = @ptrCast(&transfer_barrier) });
+
+            const blit_regions: vk.ImageBlit = .{
+                .srcSubresource = .{
+                    .aspectMask = .{ .color = true },
+                    .layerCount = 1,
+                },
+                .srcOffsets = .{
+                    .{},
+                    .{ .x = @intCast(rctx.windowsize.width), .y = @intCast(rctx.windowsize.height), .z = 1 },
+                },
+                .dstSubresource = .{
+                    .aspectMask = .{ .color = true },
+                    .layerCount = 1,
+                },
+                .dstOffsets = .{
+                    .{},
+                    .{ .x = @intCast(rctx.windowsize.width), .y = @intCast(rctx.windowsize.height), .z = 1 },
+                },
+            };
+
+            vk.cmdBlitImage(cb, asset.getImage(offscreen), .transfer_src_optimal, rctx.sc_imgs[swapchain_index], .general, 1, &.{blit_regions}, .linear);
+            vk.cmdEndDebugUtilsLabelEXT(cb);
+
+            const present_barrier: vk.ImageMemoryBarrier2 = .{
+                .srcStageMask = .{ .blit = true },
+                .srcAccessMask = .{ .transfer_write = true },
+                .dstStageMask = .{ .blit = true },
                 .dstAccessMask = .{},
                 .oldLayout = .general,
                 .newLayout = .present_srcKHR,
@@ -872,11 +946,11 @@ pub fn main(init: std.process.Init) !void {
             try vk.endCommandBuffer(cb);
         }
 
-        const present_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = rctx.swapchain_semaphore[swapchain_index], .stageMask = .{ .compute_shader = true } };
-        const loop_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = rctx.loop_tml, .stageMask = .{ .compute_shader = true }, .value = frame };
+        const present_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = rctx.swapchain_semaphore[swapchain_index], .stageMask = .{ .blit = true } };
+        const loop_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = rctx.loop_tml, .stageMask = .{}, .value = frame };
         const submit_info2: vk.SubmitInfo2 = .{
             .waitSemaphoreInfoCount = 1,
-            .pWaitSemaphoreInfos = &.{.{ .semaphore = rctx.fif_semaphore[fif_index], .stageMask = .{ .color_attachment_output = true } }},
+            .pWaitSemaphoreInfos = &.{.{ .semaphore = rctx.fif_semaphore[fif_index], .stageMask = .{ .blit = true } }},
             .commandBufferInfoCount = 1,
             .pCommandBufferInfos = &.{.{ .commandBuffer = cb }},
             .signalSemaphoreInfoCount = 2,
@@ -902,6 +976,12 @@ pub fn main(init: std.process.Init) !void {
         if (recreate_swap) {
             recreate_swap = false;
             try rctx.recreate_swap(&ctx, &asset);
+            asset.freeStorageImage(&ctx, offscreen_view);
+            asset.freeImage(&ctx, offscreen);
+            offscreen_image_ci.extent = .{ .width = rctx.windowsize.width, .height = rctx.windowsize.height, .depth = 1 };
+            offscreen = try asset.allocImage(&ctx, offscreen_image_ci);
+            offscreen_view_ci.image = asset.getImage(offscreen);
+            offscreen_view = try asset.allocStorageImage(&ctx, offscreen_view_ci);
         }
     }
     arena_frame.deinit();

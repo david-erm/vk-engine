@@ -13,7 +13,7 @@ pub const AssetManager = @import("AssetManager.zig");
 
 const log = std.log.scoped(.howtovulkan);
 
-pub fn makeError(comptime err: type, ret: anytype) err!void {
+pub fn makeError(err: type, ret: anytype) err!void {
     switch (ret) {
         @enumFromInt(0) => {
             return;
@@ -237,92 +237,83 @@ pub const Context = struct {
             vk.loadInstance(ctx.instance);
         }
 
-        {
-            var device_count: u32 = 0;
-            try vk.enumeratePhysicalDevices(ctx.instance, &device_count, null);
-            const devices = try arena.alloc(vk.PhysicalDevice, device_count);
-            try vk.enumeratePhysicalDevices(ctx.instance, &device_count, devices.ptr);
-            const device_index: u32 = 0;
-            ctx.pdevice = devices[device_index];
+        var device_count: u32 = 0;
+        try vk.enumeratePhysicalDevices(ctx.instance, &device_count, null);
+        const devices = try arena.alloc(vk.PhysicalDevice, device_count);
+        try vk.enumeratePhysicalDevices(ctx.instance, &device_count, devices.ptr);
+        const device_index: u32 = 0;
+        ctx.pdevice = devices[device_index];
 
-            for (devices) |d| {
-                var dp: vk.PhysicalDeviceProperties2 = .{};
-                vk.getPhysicalDeviceProperties2(d, &dp);
-                log.info("dev: {s}", .{dp.properties.deviceName});
-                var features: vk.PhysicalDeviceFeatures2 = .{};
-                vk.getPhysicalDeviceFeatures2(d, &features);
-            }
-
-            var device_properties: vk.PhysicalDeviceProperties2 = .{};
-            vk.getPhysicalDeviceProperties2(devices[device_index], &device_properties);
-            log.info("Selected device: {s}", .{device_properties.properties.deviceName});
+        for (devices) |d| {
+            var dp: vk.PhysicalDeviceProperties2 = .{};
+            vk.getPhysicalDeviceProperties2(d, &dp);
+            log.info("dev: {s}", .{dp.properties.deviceName});
+            var features: vk.PhysicalDeviceFeatures2 = .{};
+            vk.getPhysicalDeviceFeatures2(d, &features);
         }
 
-        {
-            var queue_count: u32 = 0;
-            ctx.qfamily = 0;
-            vk.getPhysicalDeviceQueueFamilyProperties(ctx.pdevice, &queue_count, null);
-            const queue_families = try arena.alloc(vk.QueueFamilyProperties, queue_count);
-            vk.getPhysicalDeviceQueueFamilyProperties(ctx.pdevice, &queue_count, queue_families.ptr);
-            while (!(queue_families[ctx.qfamily].queueFlags.graphics and queue_families[ctx.qfamily].queueFlags.compute)) : (ctx.qfamily += 1) {}
-            try sdl.vulkan.getPresentationSupport(ctx.instance, ctx.pdevice, ctx.qfamily);
-        }
+        var device_properties: vk.PhysicalDeviceProperties2 = .{};
+        vk.getPhysicalDeviceProperties2(devices[device_index], &device_properties);
+        log.info("Selected device: {s}", .{device_properties.properties.deviceName});
 
-        {
-            const qfpriorities: [1]f32 = .{1.0};
-            const queueCI: vk.DeviceQueueCreateInfo = .{
-                .queueFamilyIndex = ctx.qfamily,
-                .queueCount = 1,
-                .pQueuePriorities = &qfpriorities,
-            };
-            var enableVK12Features: vk.PhysicalDeviceVulkan12Features = .{
-                .descriptorIndexing = .True,
-                .shaderSampledImageArrayNonUniformIndexing = .True,
-                .runtimeDescriptorArray = .True,
-                .bufferDeviceAddress = .True,
-                .timelineSemaphore = .True,
-                .descriptorBindingPartiallyBound = .True,
-                //turned off, was used at some point
-                .descriptorBindingUpdateUnusedWhilePending = .False,
-            };
-            const enableVK13Features: vk.PhysicalDeviceVulkan13Features = .{
-                .pNext = &enableVK12Features,
-                .synchronization2 = .True,
-                .dynamicRendering = .True,
-            };
-            const enableVKFeatures: vk.PhysicalDeviceFeatures = .{
-                .samplerAnisotropy = .True,
-            };
-            var extensions: std.ArrayList([*:0]const u8) = .empty;
-            for (vk_extensions.device_extensions) |ext| {
-                try extensions.append(arena, ext.ptr);
-            }
-            try vk.createDevice(ctx.pdevice, &.{
-                .pNext = &enableVK13Features,
-                .queueCreateInfoCount = 1,
-                .pQueueCreateInfos = @ptrCast(&queueCI),
-                .enabledExtensionCount = 1,
-                .ppEnabledExtensionNames = extensions.items.ptr,
-                .pEnabledFeatures = &enableVKFeatures,
-            }, null, &ctx.device);
-            vk.loadDevice(ctx.device);
-            vk.getDeviceQueue(ctx.device, ctx.qfamily, 0, &ctx.queue);
-        }
+        var queue_count: u32 = 0;
+        ctx.qfamily = 0;
+        vk.getPhysicalDeviceQueueFamilyProperties(ctx.pdevice, &queue_count, null);
+        const queue_families = try arena.alloc(vk.QueueFamilyProperties, queue_count);
+        vk.getPhysicalDeviceQueueFamilyProperties(ctx.pdevice, &queue_count, queue_families.ptr);
+        while (!(queue_families[ctx.qfamily].queueFlags.graphics and queue_families[ctx.qfamily].queueFlags.compute)) : (ctx.qfamily += 1) {}
+        try sdl.vulkan.getPresentationSupport(ctx.instance, ctx.pdevice, ctx.qfamily);
 
-        {
-            const vkFuncs: vma.VulkanFunctions = .{
-                .vkGetInstanceProcAddr = vk.table.instance.vkGetInstanceProcAddr,
-                .vkGetDeviceProcAddr = vk.table.device.vkGetDeviceProcAddr,
-                .vkCreateImage = vk.table.device.vkCreateImage,
-            };
-            try vma.createAllocator(&.{
-                .flags = .{ .BufferDeviceAddressBit = 1 },
-                .physicalDevice = ctx.pdevice,
-                .device = ctx.device,
-                .pVulkanFunctions = &vkFuncs,
-                .instance = ctx.instance,
-            }, &ctx.vka);
+        const qfpriorities: [1]f32 = .{1.0};
+        const queueCI: vk.DeviceQueueCreateInfo = .{
+            .queueFamilyIndex = ctx.qfamily,
+            .queueCount = 1,
+            .pQueuePriorities = &qfpriorities,
+        };
+        var enableVK12Features: vk.PhysicalDeviceVulkan12Features = .{
+            .descriptorIndexing = .True,
+            .shaderSampledImageArrayNonUniformIndexing = .True,
+            .runtimeDescriptorArray = .True,
+            .bufferDeviceAddress = .True,
+            .timelineSemaphore = .True,
+            .descriptorBindingPartiallyBound = .True,
+            //turned off, was used at some point
+            .descriptorBindingUpdateUnusedWhilePending = .False,
+        };
+        const enableVK13Features: vk.PhysicalDeviceVulkan13Features = .{
+            .pNext = &enableVK12Features,
+            .synchronization2 = .True,
+            .dynamicRendering = .True,
+        };
+        const enableVKFeatures: vk.PhysicalDeviceFeatures = .{
+            .samplerAnisotropy = .True,
+        };
+        var extensions: std.ArrayList([*:0]const u8) = .empty;
+        for (vk_extensions.device_extensions) |ext| {
+            try extensions.append(arena, ext.ptr);
         }
+        try vk.createDevice(ctx.pdevice, &.{
+            .pNext = &enableVK13Features,
+            .queueCreateInfoCount = 1,
+            .pQueueCreateInfos = @ptrCast(&queueCI),
+            .enabledExtensionCount = 1,
+            .ppEnabledExtensionNames = extensions.items.ptr,
+            .pEnabledFeatures = &enableVKFeatures,
+        }, null, &ctx.device);
+        vk.loadDevice(ctx.device);
+        vk.getDeviceQueue(ctx.device, ctx.qfamily, 0, &ctx.queue);
+
+        const vkFuncs: vma.VulkanFunctions = .{
+            .vkGetInstanceProcAddr = vk.table.instance.vkGetInstanceProcAddr,
+            .vkGetDeviceProcAddr = vk.table.device.vkGetDeviceProcAddr,
+        };
+        try vma.createAllocator(&.{
+            .flags = .{ .BufferDeviceAddressBit = 1 },
+            .physicalDevice = ctx.pdevice,
+            .device = ctx.device,
+            .pVulkanFunctions = &vkFuncs,
+            .instance = ctx.instance,
+        }, &ctx.vka);
 
         return ctx;
     }
@@ -336,7 +327,7 @@ pub const RenderContext = struct {
     swapchain_ci: vk.SwapchainCreateInfoKHR,
     sc_format: vk.Format,
     sc_imgs: []vk.Image,
-    sc_img_views: []AssetManager.ViewHandle,
+    // sc_img_views: []AssetManager.ViewHandle,
     depth: AssetManager.ImageHandle,
     depth_view: AssetManager.ViewHandle,
     depth_format: vk.Format,
@@ -349,9 +340,6 @@ pub const RenderContext = struct {
         defer sdl.destroyWindow(&rctx.window);
         defer vk.destroySurfaceKHR(ctx.instance, rctx.surface, null);
         defer vk.destroySwapchainKHR(ctx.device, rctx.swapchain, null);
-        defer for (rctx.sc_img_views) |view| {
-            manager.freeStorageImage(ctx, view);
-        };
         defer for (rctx.fif_semaphore) |smp| {
             vk.destroySemaphore(ctx.device, smp, null);
         };
@@ -399,48 +387,29 @@ pub const RenderContext = struct {
         //     }
         //     break :fmt error.FormatNotFound;
         // };
-        rctx.sc_format = .b8g8r8a8_unorm;
+        rctx.sc_format = .b8g8r8a8_srgb;
 
-        {
-            var surfaceCaps: vk.SurfaceCapabilitiesKHR = undefined;
-            try vk.getPhysicalDeviceSurfaceCapabilitiesKHR(ctx.pdevice, rctx.surface, &surfaceCaps);
-            std.debug.assert(surfaceCaps.supportedUsageFlags.storage);
-            rctx.swapchain_ci = .{
-                .surface = rctx.surface,
-                .minImageCount = surfaceCaps.minImageCount,
-                .imageFormat = rctx.sc_format,
-                .imageColorSpace = .srgb_nonlinear,
-                .imageExtent = rctx.windowsize,
-                .imageArrayLayers = 1,
-                .imageUsage = .{ .color_attachment = true, .storage = true },
-                .preTransform = .{ .identity = true },
-                .compositeAlpha = .{ .@"opaque" = true },
-                .presentMode = .fifo,
-            };
-            try vk.createSwapchainKHR(ctx.device, &rctx.swapchain_ci, null, &rctx.swapchain);
-        }
+        var surfaceCaps: vk.SurfaceCapabilitiesKHR = undefined;
+        try vk.getPhysicalDeviceSurfaceCapabilitiesKHR(ctx.pdevice, rctx.surface, &surfaceCaps);
+        std.debug.assert(surfaceCaps.supportedUsageFlags.storage);
+        rctx.swapchain_ci = .{
+            .surface = rctx.surface,
+            .minImageCount = surfaceCaps.minImageCount,
+            .imageFormat = rctx.sc_format,
+            .imageColorSpace = .srgb_nonlinear,
+            .imageExtent = rctx.windowsize,
+            .imageArrayLayers = 1,
+            .imageUsage = .{ .transfer_dst = true },
+            .preTransform = .{ .identity = true },
+            .compositeAlpha = .{ .@"opaque" = true },
+            .presentMode = .fifo,
+        };
+        try vk.createSwapchainKHR(ctx.device, &rctx.swapchain_ci, null, &rctx.swapchain);
 
-        {
-            var image_count: u32 = 0;
-            try vk.getSwapchainImagesKHR(ctx.device, rctx.swapchain, &image_count, null);
-            rctx.sc_imgs = try static.alloc(vk.Image, image_count);
-            try vk.getSwapchainImagesKHR(ctx.device, rctx.swapchain, &image_count, rctx.sc_imgs.ptr);
-
-            rctx.sc_img_views = try static.alloc(AssetManager.ViewHandle, rctx.sc_imgs.len);
-            for (0..rctx.sc_imgs.len) |i| {
-                const image_viewCI: vk.ImageViewCreateInfo = .{
-                    .image = rctx.sc_imgs[i],
-                    .viewType = .@"2d",
-                    .format = rctx.sc_format,
-                    .subresourceRange = .{
-                        .aspectMask = .{ .color = true },
-                        .layerCount = 1,
-                        .levelCount = 1,
-                    },
-                };
-                rctx.sc_img_views[i] = try manager.allocStorageImage(ctx, image_viewCI);
-            }
-        }
+        var image_count: u32 = 0;
+        try vk.getSwapchainImagesKHR(ctx.device, rctx.swapchain, &image_count, null);
+        rctx.sc_imgs = try static.alloc(vk.Image, image_count);
+        try vk.getSwapchainImagesKHR(ctx.device, rctx.swapchain, &image_count, rctx.sc_imgs.ptr);
 
         rctx.fif_semaphore = try static.alloc(vk.Semaphore, frames_in_flight);
         rctx.swapchain_semaphore = try static.alloc(vk.Semaphore, rctx.sc_imgs.len);
@@ -507,21 +476,8 @@ pub const RenderContext = struct {
         rctx.swapchain_ci.imageExtent = rctx.windowsize;
         try vk.createSwapchainKHR(ctx.device, &rctx.swapchain_ci, null, &rctx.swapchain);
 
-        for (rctx.sc_img_views) |view| {
-            manager.freeStorageImage(ctx, view);
-        }
-
         var count: u32 = @intCast(rctx.sc_imgs.len);
         try vk.getSwapchainImagesKHR(ctx.device, rctx.swapchain, &count, rctx.sc_imgs.ptr);
-        for (rctx.sc_imgs, 0..) |img, i| {
-            const ci: vk.ImageViewCreateInfo = .{
-                .image = img,
-                .viewType = .@"2d",
-                .format = rctx.sc_format,
-                .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
-            };
-            rctx.sc_img_views[i] = try manager.allocStorageImage(ctx, ci);
-        }
 
         for (rctx.swapchain_semaphore) |smp| {
             vk.destroySemaphore(ctx.device, smp, null);
