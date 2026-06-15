@@ -6,22 +6,25 @@ const vk = @import("vk");
 const shaders = @import("shaders");
 const gltf = @import("zgltf").Gltf;
 
+const Swapchain = @import("Swapchain.zig");
+
 const zkf = @import("zkf.zig");
 const sdl = @import("sdl.zig");
 const vma = @import("vma.zig");
 const ktx = @import("ktx.zig");
-const c = zkf.c;
+const c = @import("c");
 
-const Vertex = zkf.Vertex;
-const Vec3 = zkf.Vec3;
-const Vec4 = zkf.Vec4;
-const Mat4 = zkf.Mat4;
-const Quat = zkf.Quat;
-const Vec2 = zkf.Vec2;
+const math = @import("math.zig");
+
+const Vertex = math.Vertex;
+const Vec3 = math.Vec3;
+const Vec4 = math.Vec4;
+const Mat4 = math.Mat4;
+const Quat = math.Quat;
+const Vec2 = math.Vec2;
+
 const Pose = zkf.Pose;
 const Camera = zkf.Camera;
-const Texture = zkf.Texture;
-const ShaderDataBuffer = zkf.ShaderDataBuffer;
 
 pub fn getShaderModule(device: vk.Device, shader: anytype) !vk.ShaderModule {
     var module: vk.ShaderModule = undefined;
@@ -50,16 +53,6 @@ const Glyph = struct {
 };
 var charmap: std.AutoHashMapUnmanaged(u21, Glyph) = .empty;
 
-const RenderInfo = struct {
-    model: u32,
-};
-
-const SceneZon = struct {
-    entities: []const RenderInfo,
-    models: []const []const u8,
-    skybox: []const u8,
-};
-
 const max_frames = 2;
 var cam: Camera = .{ .pose = .{ .pos = .{ .z = 6.0 }, .rot = .identity, .extra = 0 } };
 var fullscreen = false;
@@ -82,17 +75,26 @@ pub fn main(init: std.process.Init) !void {
     var ctx: zkf.Context = try .init(a_startup);
     defer ctx.deinit();
 
+    var window_extent: vk.Extent2D = .{ .width = 1920, .height = 1080 };
+    const window = try sdl.createWindow("hello", @intCast(window_extent.width), @intCast(window_extent.height), .{
+        .vulkan = true,
+        .resizable = true,
+        .fullscreen = true,
+        .borderless = true,
+    });
+    _ = sdl.setWindowRelativeMouseMode(window, true);
+
+    const surface = try sdl.vulkan.createSurface(window, ctx.instance, null);
+    var swapchain: Swapchain = try .init(&ctx, gpa, surface, window_extent);
+    defer swapchain.deinit(&ctx, gpa);
+
     var asset: zkf.AssetManager = try .init(ctx, gpa);
     defer asset.deinit(ctx, gpa);
-
-    //TODO: This needs to die
-    var rctx: zkf.RenderContext = try .init(&ctx, a_static, 1920, 1080, "testing", max_frames, &asset);
-    defer rctx.deinit(&ctx, &asset);
 
     var offscreen_image_ci: vk.ImageCreateInfo = .{
         .imageType = .@"2d",
         .format = .r16g16b16a16_unorm,
-        .extent = .{ .width = rctx.windowsize.width, .height = rctx.windowsize.height, .depth = 1 },
+        .extent = .{ .width = window_extent.width, .height = window_extent.height, .depth = 1 },
         .samples = .{ .@"1" = true },
         .usage = .{ .transfer_src = true, .color_attachment = true, .storage = true },
         .mipLevels = 1,
@@ -114,6 +116,31 @@ pub fn main(init: std.process.Init) !void {
     var offscreen_view = try asset.allocStorageImage(&ctx, offscreen_view_ci);
     defer asset.freeStorageImage(&ctx, offscreen_view);
 
+    var depth_ci: vk.ImageCreateInfo = .{
+        .imageType = .@"2d",
+        .format = .d32_sfloat,
+        .extent = .{ .width = window_extent.width, .height = window_extent.height, .depth = 1 },
+        .samples = .{ .@"1" = true },
+        .usage = .{ .depth_stencil_attachment = true, .sampled = true },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+    };
+    var depth_buffer = try asset.allocImage(&ctx, depth_ci);
+    defer asset.freeImage(&ctx, depth_buffer);
+    try vk.nameHandle(ctx.device, asset.getImage(depth_buffer), "Depth Buffer");
+    var depth_view_ci: vk.ImageViewCreateInfo = .{
+        .image = asset.getImage(depth_buffer),
+        .viewType = .@"2d",
+        .format = .d32_sfloat,
+        .subresourceRange = .{
+            .aspectMask = .{ .depth = true },
+            .layerCount = 1,
+            .levelCount = 1,
+        },
+    };
+    var depth_view = try asset.allocSampledImage(&ctx, depth_view_ci);
+    defer asset.freeSampledImage(&ctx, depth_view);
+
     var commandPool: vk.CommandPool = undefined;
     var command_buffers: [max_frames]vk.CommandBuffer = undefined;
     defer vk.destroyCommandPool(ctx.device, commandPool, null);
@@ -123,8 +150,6 @@ pub fn main(init: std.process.Init) !void {
         const cmdBufferCI: vk.CommandBufferAllocateInfo = .{ .commandPool = commandPool, .commandBufferCount = max_frames, .level = .primary };
         try vk.allocateCommandBuffers(ctx.device, &cmdBufferCI, &command_buffers);
     }
-
-    _ = sdl.setWindowRelativeMouseMode(rctx.window, true);
 
     const suzanne_pulled = try asset.loadObj(a_static, &io, "assets/suzanne.obj");
     const cube = try asset.loadObj(a_static, &io, "assets/cube.obj");
@@ -421,7 +446,7 @@ pub fn main(init: std.process.Init) !void {
         const render_ci: vk.PipelineRenderingCreateInfo = .{
             .colorAttachmentCount = 1,
             .pColorAttachmentFormats = &.{.r16g16b16a16_unorm},
-            .depthAttachmentFormat = rctx.depth_format,
+            .depthAttachmentFormat = .d32_sfloat,
         };
         const blend_attachment: vk.PipelineColorBlendAttachmentState = .{ .colorWriteMask = @bitCast(@as(u32, 0xF)) };
         var ci: vk.GraphicsPipelineCreateInfo = .{
@@ -470,7 +495,7 @@ pub fn main(init: std.process.Init) !void {
         const render_ci: vk.PipelineRenderingCreateInfo = .{
             .colorAttachmentCount = 1,
             .pColorAttachmentFormats = &.{.r16g16b16a16_unorm},
-            .depthAttachmentFormat = .d32_sfloat_s8_uint,
+            .depthAttachmentFormat = .d32_sfloat,
         };
         const blend_attachment: vk.PipelineColorBlendAttachmentState = .{
             .blendEnable = .True,
@@ -508,7 +533,7 @@ pub fn main(init: std.process.Init) !void {
         const render_ci: vk.PipelineRenderingCreateInfo = .{
             .colorAttachmentCount = 1,
             .pColorAttachmentFormats = &.{.r16g16b16a16_unorm},
-            .depthAttachmentFormat = .d32_sfloat_s8_uint,
+            .depthAttachmentFormat = .d32_sfloat,
         };
         const blend_attachment: vk.PipelineColorBlendAttachmentState = .{ .colorWriteMask = @bitCast(@as(u32, 0xF)) };
         const ci: vk.GraphicsPipelineCreateInfo = .{
@@ -595,9 +620,22 @@ pub fn main(init: std.process.Init) !void {
     var last_time = Io.Clock.now(.real, io).toMicroseconds();
     var quit: bool = false;
 
-    //sync stuff that really should be part of swapchain
-    var recreate_swap: bool = false;
-    var swapchain_index: u32 = 0;
+    //frame in flight (renderer probably)
+    const loop_tml: vk.Semaphore = b: {
+        var tmp: vk.Semaphore = undefined;
+        const tml: vk.SemaphoreTypeCreateInfo = .{ .semaphoreType = .timeline };
+        const tml_ci: vk.SemaphoreCreateInfo = .{ .pNext = &tml };
+        try vk.createSemaphore(ctx.device, &tml_ci, null, &tmp);
+        break :b tmp;
+    };
+    var fif_semaphores: [max_frames]vk.Semaphore = undefined;
+    for (fif_semaphores, 0..) |_, i| {
+        const ci: vk.SemaphoreCreateInfo = .{};
+        try vk.createSemaphore(ctx.device, &ci, null, &fif_semaphores[i]);
+    }
+    defer for (fif_semaphores) |smp| {
+        vk.destroySemaphore(ctx.device, smp, null);
+    };
     var fif_index: usize = 0;
     var frame: u64 = 0;
     var signal_val: [max_frames]u64 = @splat(0);
@@ -618,13 +656,10 @@ pub fn main(init: std.process.Init) !void {
         //TODO: dont just retain_capacity
         _ = arena_frame.reset(.retain_capacity);
 
-        const wait_info: vk.SemaphoreWaitInfo = .{ .semaphoreCount = 1, .pSemaphores = @ptrCast(&rctx.loop_tml), .pValues = &.{signal_val[fif_index]} };
+        const wait_info: vk.SemaphoreWaitInfo = .{ .semaphoreCount = 1, .pSemaphores = @ptrCast(&loop_tml), .pValues = &.{signal_val[fif_index]} };
         try vk.waitSemaphores(ctx.device, &wait_info, std.math.maxInt(u64));
         frame += 1;
-        vk.acquireNextImageKHR(ctx.device, rctx.swapchain, std.math.maxInt(u64), rctx.fif_semaphore[fif_index], null, &swapchain_index) catch |e| switch (e) {
-            error.error_out_of_dateKHR, error.suboptimalKHR => recreate_swap = true,
-            else => return e,
-        };
+        const current_image = try swapchain.acquire(&ctx, fif_semaphores[fif_index]);
 
         //reduces input latency or smth
         // try Io.sleep(io, .fromMicroseconds(4000), .real);
@@ -669,7 +704,7 @@ pub fn main(init: std.process.Init) !void {
             while (sdl.pollEvent(&event)) {
                 switch (event.type) {
                     .quit => quit = true,
-                    .window_resized => recreate_swap = true,
+                    .window_resized => swapchain.should_recreate = true,
                     .key_down => {
                         if (!event.key.repeat) {
                             switch (event.key.scancode) {
@@ -677,11 +712,11 @@ pub fn main(init: std.process.Init) !void {
                                 .escape => quit = true,
                                 .f11 => {
                                     fullscreen = !fullscreen;
-                                    _ = sdl.setWindowFullscreen(rctx.window, fullscreen);
+                                    _ = sdl.setWindowFullscreen(window, fullscreen);
                                 },
                                 .f10 => {
                                     mouse_mode = !mouse_mode;
-                                    _ = sdl.setWindowRelativeMouseMode(rctx.window, mouse_mode);
+                                    _ = sdl.setWindowRelativeMouseMode(window, mouse_mode);
                                 },
                                 else => {},
                             }
@@ -692,10 +727,10 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        const aspect = @as(f32, @floatFromInt(rctx.windowsize.width)) / @as(f32, @floatFromInt(rctx.windowsize.height));
+        const aspect = @as(f32, @floatFromInt(window_extent.width)) / @as(f32, @floatFromInt(window_extent.height));
 
         scene.projection = .perspective(cam.fov, aspect, 0.1, 32.0);
-        scene.ortho = .ortho(0.0, @floatFromInt(rctx.windowsize.width), 0.0, @floatFromInt(rctx.windowsize.height));
+        scene.ortho = .ortho(0.0, @floatFromInt(window_extent.width), 0.0, @floatFromInt(window_extent.height));
         scene.cam = cam.pose;
         scene.selected = sel;
         scene.light_pos.x = @as(f32, @floatCast(@sin(std.math.pi * flast * 0.25))) * 4.0;
@@ -751,7 +786,7 @@ pub fn main(init: std.process.Init) !void {
                     .dstAccessMask = .{ .transfer_write = true },
                     .oldLayout = .undefined,
                     .newLayout = .general,
-                    .image = rctx.sc_imgs[swapchain_index],
+                    .image = current_image,
                     .subresourceRange = .{ .aspectMask = .{ .color = true }, .levelCount = 1, .layerCount = 1 },
                 },
                 .{
@@ -761,8 +796,8 @@ pub fn main(init: std.process.Init) !void {
                     .dstAccessMask = .{ .depth_stencil_attachment_write = true },
                     .oldLayout = .undefined,
                     .newLayout = .attachment_optimal,
-                    .image = asset.getImage(rctx.depth),
-                    .subresourceRange = .{ .aspectMask = .{ .depth = true, .stencil = true }, .levelCount = 1, .layerCount = 1 },
+                    .image = asset.getImage(depth_buffer),
+                    .subresourceRange = .{ .aspectMask = .{ .depth = true }, .levelCount = 1, .layerCount = 1 },
                 },
             };
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 3, .pImageMemoryBarriers = &output_barriers });
@@ -775,7 +810,7 @@ pub fn main(init: std.process.Init) !void {
                 .clearValue = .{ .color = .{ .float32 = .{ 0.0, 0.0, 0.0, 1.0 } } },
             };
             const depth_attach_info: vk.RenderingAttachmentInfo = .{
-                .imageView = asset.getSampledImage(rctx.depth_view),
+                .imageView = asset.getSampledImage(depth_view),
                 .imageLayout = .attachment_optimal,
                 .loadOp = .clear,
                 .storeOp = .dont_care,
@@ -783,7 +818,7 @@ pub fn main(init: std.process.Init) !void {
             };
 
             const rendering_info: vk.RenderingInfo = .{
-                .renderArea = .{ .extent = rctx.windowsize },
+                .renderArea = .{ .extent = window_extent },
                 .layerCount = 1,
                 .colorAttachmentCount = 1,
                 .pColorAttachments = @ptrCast(&color_attach_info),
@@ -794,13 +829,13 @@ pub fn main(init: std.process.Init) !void {
                 vk.cmdBeginRendering(cb, &rendering_info);
                 defer vk.cmdEndRendering(cb);
                 const vp: vk.Viewport = .{
-                    .width = @floatFromInt(rctx.windowsize.width),
-                    .height = @floatFromInt(rctx.windowsize.height),
+                    .width = @floatFromInt(window_extent.width),
+                    .height = @floatFromInt(window_extent.height),
                     .maxDepth = 1.0,
                     .minDepth = 0.0,
                 };
                 vk.cmdSetViewport(cb, 0, 1, @ptrCast(&vp));
-                const scissor: vk.Rect2D = .{ .extent = rctx.windowsize };
+                const scissor: vk.Rect2D = .{ .extent = window_extent };
                 vk.cmdSetScissor(cb, 0, 1, @ptrCast(&scissor));
 
                 vk.cmdBindPipeline(cb, .graphics, pbr_pipeline);
@@ -888,7 +923,7 @@ pub fn main(init: std.process.Init) !void {
                 .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
             };
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = @ptrCast(&compute_barrier1) });
-            vk.cmdDispatch(cb, (rctx.windowsize.width / shaders.box.local_size[0]) + 1, (rctx.windowsize.height / shaders.box.local_size[1]) + 1, 1);
+            vk.cmdDispatch(cb, (window_extent.width / shaders.box.local_size[0]) + 1, (window_extent.height / shaders.box.local_size[1]) + 1, 1);
 
             vk.cmdEndDebugUtilsLabelEXT(cb);
 
@@ -912,7 +947,7 @@ pub fn main(init: std.process.Init) !void {
                 },
                 .srcOffsets = .{
                     .{},
-                    .{ .x = @intCast(rctx.windowsize.width), .y = @intCast(rctx.windowsize.height), .z = 1 },
+                    .{ .x = @intCast(window_extent.width), .y = @intCast(window_extent.height), .z = 1 },
                 },
                 .dstSubresource = .{
                     .aspectMask = .{ .color = true },
@@ -920,11 +955,11 @@ pub fn main(init: std.process.Init) !void {
                 },
                 .dstOffsets = .{
                     .{},
-                    .{ .x = @intCast(rctx.windowsize.width), .y = @intCast(rctx.windowsize.height), .z = 1 },
+                    .{ .x = @intCast(window_extent.width), .y = @intCast(window_extent.height), .z = 1 },
                 },
             };
 
-            vk.cmdBlitImage(cb, asset.getImage(offscreen), .transfer_src_optimal, rctx.sc_imgs[swapchain_index], .general, 1, &.{blit_regions}, .linear);
+            vk.cmdBlitImage(cb, asset.getImage(offscreen), .transfer_src_optimal, current_image, .general, 1, &.{blit_regions}, .linear);
             vk.cmdEndDebugUtilsLabelEXT(cb);
 
             const present_barrier: vk.ImageMemoryBarrier2 = .{
@@ -934,7 +969,7 @@ pub fn main(init: std.process.Init) !void {
                 .dstAccessMask = .{},
                 .oldLayout = .general,
                 .newLayout = .present_srcKHR,
-                .image = rctx.sc_imgs[swapchain_index],
+                .image = current_image,
                 .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
             };
 
@@ -946,11 +981,11 @@ pub fn main(init: std.process.Init) !void {
             try vk.endCommandBuffer(cb);
         }
 
-        const present_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = rctx.swapchain_semaphore[swapchain_index], .stageMask = .{ .blit = true } };
-        const loop_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = rctx.loop_tml, .stageMask = .{}, .value = frame };
+        const present_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = swapchain.semaphores[swapchain.index], .stageMask = .{ .blit = true } };
+        const loop_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = loop_tml, .stageMask = .{}, .value = frame };
         const submit_info2: vk.SubmitInfo2 = .{
             .waitSemaphoreInfoCount = 1,
-            .pWaitSemaphoreInfos = &.{.{ .semaphore = rctx.fif_semaphore[fif_index], .stageMask = .{ .blit = true } }},
+            .pWaitSemaphoreInfos = &.{.{ .semaphore = fif_semaphores[fif_index], .stageMask = .{ .blit = true } }},
             .commandBufferInfoCount = 1,
             .pCommandBufferInfos = &.{.{ .commandBuffer = cb }},
             .signalSemaphoreInfoCount = 2,
@@ -960,28 +995,28 @@ pub fn main(init: std.process.Init) !void {
         signal_val[fif_index] = frame;
         fif_index = (fif_index + 1) % max_frames;
 
-        const present_info: vk.PresentInfoKHR = .{
-            .waitSemaphoreCount = 1,
-            .pWaitSemaphores = @ptrCast(&rctx.swapchain_semaphore[swapchain_index]),
-            .swapchainCount = 1,
-            .pSwapchains = @ptrCast(&rctx.swapchain),
-            .pImageIndices = @ptrCast(&swapchain_index),
-        };
+        try swapchain.present(&ctx);
 
-        vk.queuePresentKHR(ctx.queue, &present_info) catch |e| switch (e) {
-            error.error_out_of_dateKHR, error.suboptimalKHR => recreate_swap = true,
-            else => return e,
-        };
+        if (swapchain.should_recreate) {
+            swapchain.should_recreate = false;
+            _ = sdl.getWindowSize(window, @ptrCast(&window_extent.width), @ptrCast(&window_extent.height));
 
-        if (recreate_swap) {
-            recreate_swap = false;
-            try rctx.recreate_swap(&ctx, &asset);
+            try vk.queueWaitIdle(ctx.queue);
+            try swapchain.recreate(&ctx, window_extent);
+
             asset.freeStorageImage(&ctx, offscreen_view);
             asset.freeImage(&ctx, offscreen);
-            offscreen_image_ci.extent = .{ .width = rctx.windowsize.width, .height = rctx.windowsize.height, .depth = 1 };
+            offscreen_image_ci.extent = .{ .width = window_extent.width, .height = window_extent.height, .depth = 1 };
             offscreen = try asset.allocImage(&ctx, offscreen_image_ci);
             offscreen_view_ci.image = asset.getImage(offscreen);
             offscreen_view = try asset.allocStorageImage(&ctx, offscreen_view_ci);
+
+            asset.freeSampledImage(&ctx, depth_view);
+            asset.freeImage(&ctx, depth_buffer);
+            depth_ci.extent = .{ .width = window_extent.width, .height = window_extent.height, .depth = 1 };
+            depth_buffer = try asset.allocImage(&ctx, depth_ci);
+            depth_view_ci.image = asset.getImage(depth_buffer);
+            depth_view = try asset.allocSampledImage(&ctx, depth_view_ci);
         }
     }
     arena_frame.deinit();

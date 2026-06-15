@@ -3,6 +3,7 @@
 - maybe create system to create image view from imageHandle 
 - make POSE lib for shaders
 - export a vk format to avoid stuff having to import vk proper
+- why wtf are ImageHandles same as index into descriptor anyway? just have an internal counter and vk.updateDescriptor on the fly, clear every frame?
 
 # CHALLENGE:
 - fix the text rendering, make it actually good (Vertex pulling, only 1 quad for char? or 1 unit quad and 2 scale floats?)

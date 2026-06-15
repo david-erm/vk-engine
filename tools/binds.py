@@ -349,10 +349,8 @@ def parse_type(type):
 
     if type.pointer:
         if type.name.startswith("pp"):
-            ret += "[*]const "
-        if type.optional:
-            ret += "?"
-        if type.optionalPointer:
+            ret += "?[*]const "
+        if type.optional or type.optionalPointer:
             ret += "?"
         if type.nullTerminated:
             ret += "[*:0]"
@@ -429,7 +427,9 @@ def handle_member(mem, st):
     ret += mem.name + ": "
 
     ret += parse_type(mem)
-    if not (mem.type in vk.structs and vk.structs[mem.type].union or st.union):
+    if mem.name.startswith("pp"):
+        ret += " = null"
+    elif not (mem.type in vk.structs and vk.structs[mem.type].union or st.union):
         ret += get_default(mem)
 
     ret += ",\n"

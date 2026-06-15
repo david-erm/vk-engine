@@ -42,8 +42,10 @@ float4 main(VSOut input) {
     } else {
         N = normalize(input.Normal);
     }
-    const float3 L = normalize(input.LightVec);
     const float3 V = normalize(input.ViewVec);
+    
+    //per light
+    const float3 L = normalize(input.LightVec);
     const float3 R = reflect(-L, N);
     const float3 diffuse = max(dot(N, L), 0.0025);
     const float3 specular = pow(max(dot(R, V), 0.00001), 64.0) * 0.75;
