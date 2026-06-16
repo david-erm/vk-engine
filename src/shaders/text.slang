@@ -1,5 +1,5 @@
 import desc;
-import util;
+import structs;
 
 struct VSOut {
     float4 Pos : SV_Position;

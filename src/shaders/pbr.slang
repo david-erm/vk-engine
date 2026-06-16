@@ -1,5 +1,6 @@
 import desc;
-import util;
+import structs;
+import pbrutils;
 
 struct VSOut {
     float4 Pos : SV_POSITION;
@@ -14,7 +15,6 @@ struct VSOut {
 VSOut main(uniform Push push, uint vid : SV_VulkanVertexID, uint iid : SV_VulkanInstanceID) {
     VSOut output;
     Vertex v = push.vertices[vid];
-    float2 uv = float2(v.u, v.v);
 
     Pose pose = push.poses[iid];
     Pose cam = push.scene.cam;
@@ -27,34 +27,51 @@ VSOut main(uniform Push push, uint vid : SV_VulkanVertexID, uint iid : SV_Vulkan
     output.ViewVec  = -frag_pos;
 
     output.mat = push.materials[iid];
-    output.UV = uv;
+    output.UV = v.uv;
     
     return output;
 
 };
 
+static const float3 light_color = float3(30.4, 31.0, 30.3);
 [shader("fragment")]
 float4 main(VSOut input) {
     float3 N;
     if (input.mat.normal != (1 << 32) - 1) {
-        float2 raw_n = sampled[input.mat.normal].Sample(samplers[0], input.UV).rg; 
+        const float2 raw_n = sampled[NonUniformResourceIndex(input.mat.normal)].Sample(samplers[0], input.UV).rg; 
         N = normalsToViewSpace(restoreNormal(raw_n), -input.ViewVec, input.UV, input.Normal);
     } else {
         N = normalize(input.Normal);
+        return float4(float3(0.1, 0.0, 0.0), 1.0);
     }
     const float3 V = normalize(input.ViewVec);
+
+    const float3 albedo = sampled[NonUniformResourceIndex(input.mat.albedo)].Sample(samplers[0], input.UV).rgb;
+    // const float ao = sampled[NonUniformResourceIndex(input.mat.occlusion)].Sample(samplers[0], input.UV).r;
+    const float2 metallic_roughness = sampled[NonUniformResourceIndex(input.mat.metallic_roughness)].Sample(samplers[0], input.UV).rg;
     
     //per light
     const float3 L = normalize(input.LightVec);
-    const float3 R = reflect(-L, N);
-    const float3 diffuse = max(dot(N, L), 0.0025);
-    const float3 specular = pow(max(dot(R, V), 0.00001), 64.0) * 0.75;
+    const float3 H = normalize(V + L);
+    const float d = length(input.LightVec);
+    const float3 radiance = (1 / (d * d)) * light_color;
 
-    const float d = distance(-input.ViewVec, input.LightVec);
-    const float intensity = (1 / (d * d)) * 10.0;
+    const float NdotL = max(dot(N, L), 0.0);
+    const float NdotV = max(dot(N, V), 0.0);
 
-    float3 color;
-    color = sampled[NonUniformResourceIndex(input.mat.albedo)].Sample(samplers[0], input.UV).rgb;
-    return float4(color.rgb * (diffuse + specular) * intensity, 1.0);
-    // return float4(sampled[input.mat.metallic_roughness].Sample(samplers[0], input.UV).rgb, 1.0);
+    //pbr    
+    const float NDF = distributionGGX(N, H, metallic_roughness.r);
+    const float G = geometrySmith(NdotV, NdotL, metallic_roughness.r);
+    const float3 F = lerp(F0, albedo, metallic_roughness.g);
+    const float3 fres = fresnelSchlick(max(dot(N, V), 0.0), F);
+
+    const float3 kD = (float3(1.0) - fres) * (1.0 - metallic_roughness.g);
+
+    const float3 numerator = NDF * G * F;
+    const float denominator = (4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0)) + 0.0001;
+    const float3 specular = numerator / denominator;
+
+    const float3 Lo = (kD * albedo / float.getPi() + specular) * radiance * NdotL;
+    
+    return float4(Lo, 1.0);
 }

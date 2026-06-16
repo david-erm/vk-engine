@@ -4,17 +4,13 @@ const Io = std.Io;
 
 const vk = @import("vk");
 const shaders = @import("shaders");
-const gltf = @import("zgltf").Gltf;
-
-const Swapchain = @import("Swapchain.zig");
+const c = @import("c");
 
 const zkf = @import("zkf.zig");
 const sdl = @import("sdl.zig");
-const vma = @import("vma.zig");
-const ktx = @import("ktx.zig");
-const c = @import("c");
-
 const math = @import("math.zig");
+const gpu = @import("gpu_structs.zig");
+const Swapchain = @import("Swapchain.zig");
 
 const Vertex = math.Vertex;
 const Vec3 = math.Vec3;
@@ -22,7 +18,6 @@ const Vec4 = math.Vec4;
 const Mat4 = math.Mat4;
 const Quat = math.Quat;
 const Vec2 = math.Vec2;
-
 const Pose = zkf.Pose;
 const Camera = zkf.Camera;
 
@@ -36,14 +31,6 @@ pub fn getShaderModule(device: vk.Device, shader: anytype) !vk.ShaderModule {
     return module;
 }
 
-pub const Scene = extern struct {
-    projection: Mat4 = .zero,
-    ortho: Mat4 = .zero,
-    cam: Pose = .{},
-    light_pos: Vec4 = .{ .x = 0.0, .y = -10.0, .z = 0.0, .w = 0.0 },
-    selected: u32 = 1,
-};
-
 const Glyph = struct {
     uv: Vec2 = .{},
     uv_max: Vec2 = .{},
@@ -55,11 +42,6 @@ var charmap: std.AutoHashMapUnmanaged(u21, Glyph) = .empty;
 
 const max_frames = 2;
 var cam: Camera = .{ .pose = .{ .pos = .{ .z = 6.0 }, .rot = .identity, .extra = 0 } };
-var fullscreen = false;
-
-var mouse_mode = true;
-var mouse_pos: Vec2 = .{ .x = 0, .y = 0 };
-var mouse_state: sdl.MouseButtonFlags = .{};
 
 var space_advance: f32 = undefined;
 
@@ -82,7 +64,12 @@ pub fn main(init: std.process.Init) !void {
         .fullscreen = true,
         .borderless = true,
     });
+    //window? window owns input
+    var mouse_mode = true;
+    var mouse_pos: Vec2 = .{ .x = 0, .y = 0 };
+    var mouse_state: sdl.MouseButtonFlags = .{};
     _ = sdl.setWindowRelativeMouseMode(window, true);
+    var fullscreen = true;
 
     const surface = try sdl.vulkan.createSurface(window, ctx.instance, null);
     var swapchain: Swapchain = try .init(&ctx, gpa, surface, window_extent);
@@ -585,7 +572,7 @@ pub fn main(init: std.process.Init) !void {
     };
     for (0..max_frames) |i| {
         const uBufferCI: vk.BufferCreateInfo = .{
-            .size = @sizeOf(Scene),
+            .size = @sizeOf(gpu.Scene),
             .usage = .{ .shader_device_address = true },
         };
         scene_buffer[i] = try .init(ctx.vka, uBufferCI, .mapped_vram);
@@ -628,6 +615,7 @@ pub fn main(init: std.process.Init) !void {
         try vk.createSemaphore(ctx.device, &tml_ci, null, &tmp);
         break :b tmp;
     };
+    defer vk.destroySemaphore(ctx.device, loop_tml, null);
     var fif_semaphores: [max_frames]vk.Semaphore = undefined;
     for (fif_semaphores, 0..) |_, i| {
         const ci: vk.SemaphoreCreateInfo = .{};
@@ -641,7 +629,7 @@ pub fn main(init: std.process.Init) !void {
     var signal_val: [max_frames]u64 = @splat(0);
 
     //"game stuff"
-    var scene: Scene = .{};
+    var scene: gpu.Scene = .{};
     var poses: [thing_limit]Pose = @splat(.{});
     var mats: [mat_limit]zkf.AssetManager.Material = @splat(.{});
     var sel: u32 = 0;
@@ -734,6 +722,7 @@ pub fn main(init: std.process.Init) !void {
         scene.cam = cam.pose;
         scene.selected = sel;
         scene.light_pos.x = @as(f32, @floatCast(@sin(std.math.pi * flast * 0.25))) * 4.0;
+        scene.light_pos.y = @as(f32, @floatCast(@sin(std.math.pi * flast * 0.25))) * 4.0 - 4;
         for (0..3) |i| {
             const idx: f32 = @floatFromInt(i);
             const pos: Vec3 = .{ .x = (idx - 1.0) * 3.0, .y = -(idx), .z = 0.0 };
@@ -875,7 +864,7 @@ pub fn main(init: std.process.Init) !void {
                 //cant know
                 var pos: Vec2 = .{ .x = mouse_pos.x, .y = mouse_pos.y };
                 //TODO: new lines
-                const text = try std.fmt.allocPrint(a_frame, "frametimeg,: {d:.3}ms±😊\n {}, {}", .{ elasped / 1000, pos.x, pos.y });
+                const text = try std.fmt.allocPrint(a_frame, "frametimeg,: {d:.3}ms±😊\n {}, {}", .{ elasped / 1000, window_extent.width, window_extent.height });
                 const scale: f32 = 1;
                 for (text, 0..) |char, i| {
                     if (char == ' ') {
@@ -911,7 +900,6 @@ pub fn main(init: std.process.Init) !void {
             vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&asset.descriptor_set), 0, undefined);
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 0, 8, @ptrCast(&mouse_pos));
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 8, 4, @ptrCast(&offscreen_view));
-            vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 12, 4, &.{ 0, 0, 0, 0 });
             const compute_barrier1: vk.ImageMemoryBarrier2 = .{
                 .srcStageMask = .{ .color_attachment_output = true },
                 .srcAccessMask = .{ .color_attachment_write = true },

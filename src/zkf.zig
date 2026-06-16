@@ -10,6 +10,7 @@ const math = @import("math.zig");
 
 pub const Vec3 = math.Vec3;
 pub const Quat = math.Quat;
+pub const Pose = @import("gpu_structs.zig").Pose;
 
 const vk_extensions = @import("vk_extensions");
 
@@ -51,29 +52,27 @@ pub const Context = struct {
 
         vk.load(instanceProcAddr);
 
-        {
-            const platform_extensions = try sdl.vulkan.getInstanceExtensions();
-            var extensions: std.ArrayList([*:0]const u8) = .empty;
+        const platform_extensions = try sdl.vulkan.getInstanceExtensions();
+        var extensions: std.ArrayList([*:0]const u8) = .empty;
 
-            try extensions.appendSlice(arena, platform_extensions);
-            for (vk_extensions.instance_extensions) |ext| {
-                try extensions.append(arena, ext.ptr);
-            }
-
-            const app_info: vk.ApplicationInfo = .{
-                .apiVersion = vk.makeApiVersion(0, 1, 3, 0),
-                .pApplicationName = "howtovulkna",
-                .applicationVersion = vk.makeApiVersion(0, 1, 0, 0),
-                .pEngineName = "zkf",
-                .engineVersion = vk.makeApiVersion(0, 1, 0, 0),
-            };
-            try vk.createInstance(&.{
-                .pApplicationInfo = &app_info,
-                .enabledExtensionCount = @intCast(extensions.items.len),
-                .ppEnabledExtensionNames = extensions.items.ptr,
-            }, null, &ctx.instance);
-            vk.loadInstance(ctx.instance);
+        try extensions.appendSlice(arena, platform_extensions);
+        for (vk_extensions.instance_extensions) |ext| {
+            try extensions.append(arena, ext.ptr);
         }
+
+        const app_info: vk.ApplicationInfo = .{
+            .apiVersion = vk.makeApiVersion(0, 1, 3, 0),
+            .pApplicationName = "howtovulkna",
+            .applicationVersion = vk.makeApiVersion(0, 1, 0, 0),
+            .pEngineName = "zkf",
+            .engineVersion = vk.makeApiVersion(0, 1, 0, 0),
+        };
+        try vk.createInstance(&.{
+            .pApplicationInfo = &app_info,
+            .enabledExtensionCount = @intCast(extensions.items.len),
+            .ppEnabledExtensionNames = extensions.items.ptr,
+        }, null, &ctx.instance);
+        vk.loadInstance(ctx.instance);
 
         var device_count: u32 = 0;
         try vk.enumeratePhysicalDevices(ctx.instance, &device_count, null);
@@ -110,11 +109,12 @@ pub const Context = struct {
         };
         var enableVK12Features: vk.PhysicalDeviceVulkan12Features = .{
             .descriptorIndexing = .True,
-            .shaderSampledImageArrayNonUniformIndexing = .True,
             .runtimeDescriptorArray = .True,
             .bufferDeviceAddress = .True,
             .timelineSemaphore = .True,
+            .shaderSampledImageArrayNonUniformIndexing = .True,
             .descriptorBindingPartiallyBound = .True,
+            .scalarBlockLayout = .True,
             //turned off, was used at some point
             .descriptorBindingUpdateUnusedWhilePending = .False,
         };
@@ -126,16 +126,16 @@ pub const Context = struct {
         const enableVKFeatures: vk.PhysicalDeviceFeatures = .{
             .samplerAnisotropy = .True,
         };
-        var extensions: std.ArrayList([*:0]const u8) = .empty;
+        var dev_extensions: std.ArrayList([*:0]const u8) = .empty;
         for (vk_extensions.device_extensions) |ext| {
-            try extensions.append(arena, ext.ptr);
+            try dev_extensions.append(arena, ext.ptr);
         }
         try vk.createDevice(ctx.pdevice, &.{
             .pNext = &enableVK13Features,
             .queueCreateInfoCount = 1,
             .pQueueCreateInfos = @ptrCast(&queueCI),
             .enabledExtensionCount = 1,
-            .ppEnabledExtensionNames = extensions.items.ptr,
+            .ppEnabledExtensionNames = dev_extensions.items.ptr,
             .pEnabledFeatures = &enableVKFeatures,
         }, null, &ctx.device);
         vk.loadDevice(ctx.device);
@@ -242,12 +242,6 @@ pub const Buffer = struct {
     pub fn address(buff: Buffer, device: vk.Device) vk.DeviceAddress {
         return vk.getBufferDeviceAddress(device, &.{ .buffer = buff.handle });
     }
-};
-
-pub const Pose = extern struct {
-    pos: Vec3 = .{},
-    extra: f32 = 1,
-    rot: Quat = .identity,
 };
 
 pub const Camera = struct {

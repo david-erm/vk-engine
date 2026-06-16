@@ -1,3 +1,4 @@
+//TODO: isnt this just a renderer?
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -11,18 +12,13 @@ const ktx = @import("ktx.zig");
 const sdl = @import("sdl.zig");
 const vma = @import("vma.zig");
 const zkf = @import("zkf.zig");
+const math = @import("math.zig");
+const gpu = @import("gpu_structs.zig");
 const ObjectPool = zkf.ObjectPool;
 const Context = zkf.Context;
 const Buffer = zkf.Buffer;
 
 const AssetManager = @This();
-
-const Vertex = struct {
-    pos: zkf.Vec3,
-    u: f32,
-    norm: zkf.Vec3,
-    v: f32,
-};
 
 pub const ImageHandle = enum(u32) {
     empty = std.math.maxInt(u32),
@@ -463,7 +459,7 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
 
         for (mesh.primitives) |primitive| {
             const start_index: u32 = @intCast(manager.idx_offset / @sizeOf(IndexType));
-            const start_vertex: i32 = @intCast(manager.vert_offset / @sizeOf(Vertex));
+            const start_vertex: i32 = @intCast(manager.vert_offset / @sizeOf(gpu.Vertex));
 
             const indices = gltf.data.accessors[primitive.indices orelse return error.NoIndices];
             const index_count: u32 = @intCast(indices.count);
@@ -497,19 +493,18 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
             for (0..positions.count) |_| {
                 const pos: *const zkf.Vec3 = @ptrCast(@alignCast(pos_it.next().?.ptr));
                 const norm: *const zkf.Vec3 = @ptrCast(@alignCast(norm_it.next().?.ptr));
-                const tex = tex_it.next().?;
+                const tex: *const math.Vec2 = @ptrCast(@alignCast(tex_it.next().?.ptr));
 
                 const pos_temp = pos.mul(scale).mul(gl_to_vulkan);
                 const norm_flipped = norm.mul(gl_to_vulkan).normalize();
-                const w: Vertex = .{
+                const w: gpu.Vertex = .{
                     .pos = pos_temp,
-                    .u = tex[0],
                     .norm = norm_flipped,
-                    .v = tex[1],
+                    .uv = tex.*,
                 };
 
                 manager.vertices.write(manager.vert_offset, w);
-                manager.vert_offset += @sizeOf(Vertex);
+                manager.vert_offset += @sizeOf(gpu.Vertex);
             }
         }
     }
@@ -550,14 +545,13 @@ pub fn loadObj(manager: *AssetManager, arena: std.mem.Allocator, io: *std.Io, pa
         const vn_start: usize = @intCast(face.vn_idx * 3);
         const vt_start: usize = @intCast(face.vt_idx * 2);
 
-        const vert: Vertex = .{
+        const vert: gpu.Vertex = .{
             .pos = .{ .x = attrib.vertices[v_start], .y = -attrib.vertices[v_start + 1], .z = attrib.vertices[v_start + 2] },
-            .u = attrib.texcoords[vt_start],
             .norm = .{ .x = attrib.normals[vn_start], .y = -attrib.normals[vn_start + 1], .z = attrib.normals[vn_start + 2] },
-            .v = 1.0 - attrib.texcoords[vt_start + 1],
+            .uv = .{ .x = attrib.texcoords[vt_start], .y = 1.0 - attrib.texcoords[vt_start] },
         };
         manager.vertices.write(manager.vert_offset, vert);
-        manager.vert_offset += @sizeOf(Vertex);
+        manager.vert_offset += @sizeOf(gpu.Vertex);
         manager.indices.write(manager.idx_offset, @as(IndexType, @intCast(i)));
         manager.idx_offset += @sizeOf(IndexType);
     }
@@ -568,18 +562,18 @@ pub fn loadObj(manager: *AssetManager, arena: std.mem.Allocator, io: *std.Io, pa
     return .{
         .start_index = idx_start / @sizeOf(IndexType),
         .index_count = attrib.num_faces,
-        .start_vertex = @intCast(vert_start / @sizeOf(Vertex)),
+        .start_vertex = @intCast(vert_start / @sizeOf(gpu.Vertex)),
     };
 }
 
-pub fn addMesh(manager: *AssetManager, indices: []const IndexType, vertices: []const Vertex) Mesh {
+pub fn addMesh(manager: *AssetManager, indices: []const IndexType, vertices: []const gpu.Vertex) Mesh {
     const mesh: Mesh = .{
-        .start_vertex = @intCast(manager.vert_offset / @sizeOf(Vertex)),
+        .start_vertex = @intCast(manager.vert_offset / @sizeOf(gpu.Vertex)),
         .start_index = @intCast(manager.idx_offset / @sizeOf(IndexType)),
         .index_count = @intCast(indices.len),
     };
     manager.vertices.write(manager.vert_offset, vertices);
-    manager.vert_offset += vertices.len * @sizeOf(Vertex);
+    manager.vert_offset += vertices.len * @sizeOf(gpu.Vertex);
     manager.indices.write(manager.idx_offset, indices);
     manager.idx_offset += indices.len * @sizeOf(IndexType);
 

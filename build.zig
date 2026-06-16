@@ -227,19 +227,26 @@ pub fn compileShaders(
         const codegen_step = b.addRunArtifact(reflect_gen);
 
         const filename = std.fs.path.stem(path);
-        const slangc = b.addSystemCommand(&.{ "slangc", "-Wno-39001", "-depfile" });
+        const slangc = b.addSystemCommand(&.{
+            "slangc",
+            "-Wno-39001",
+            "-fvk-use-scalar-layout",
+            "-matrix-layout-column-major",
+            "-O1",
+            "-target",
+            "spirv",
+        });
+        slangc.addFileArg(b.path(path));
+
+        slangc.addArg("-depfile");
         _ = slangc.addDepFileOutputArg(b.fmt("{s}.d", .{filename}));
 
-        slangc.addFileArg(b.path(path));
-        slangc.addArgs(&.{ "-matrix-layout-column-major", "-target", "spirv", "-o" });
+        slangc.addArgs(&.{ "-target", "spirv", "-o" });
         const spirv = slangc.addOutputFileArg(b.fmt("{s}.spv", .{filename}));
 
         slangc.addArg("-reflection-json");
         const json = slangc.addOutputFileArg(b.fmt("{s}.json", .{filename}));
         codegen_step.addFileArg(json);
-
-        // for debuggin
-        b.getInstallStep().dependOn(&b.addInstallFileWithDir(json, .{ .custom = "json" }, b.fmt("{s}.json", .{filename})).step);
 
         const zig = codegen_step.addOutputFileArg(b.fmt("{s}.zig", .{filename}));
         shaders.addAnonymousImport(filename, .{
