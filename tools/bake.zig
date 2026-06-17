@@ -250,7 +250,7 @@ pub fn makeKtx(
         .numLayers = 1,
         .numFaces = 1,
         .isArray = false,
-        .generateMipmaps = false,
+        .generateMipmaps = true,
     };
     const texture: *ktx.Texture = try .create(&ci, .alloc_storage);
     defer texture.destroy();

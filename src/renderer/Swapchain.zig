@@ -1,9 +1,10 @@
 const std = @import("std");
-const vk = @import("vk");
-const zkf = @import("zkf.zig");
 const log = std.log.scoped(.renderer);
 
-const Context = zkf.Context;
+const vk = @import("vk");
+
+const Context = @import("Renderer.zig").Context;
+
 const Swapchain = @This();
 
 handle: vk.SwapchainKHR,
@@ -113,6 +114,7 @@ pub fn recreate(swapchain: *Swapchain, ctx: *const Context, extent: vk.Extent2D)
     vk.destroySwapchainKHR(ctx.device, ci.oldSwapchain, null);
 }
 
+//TODO: both acquire and present are likely bette fitted as an operation by Renderer.zig that takes in a swapchain/window as param
 ///`signal` is signaled when the swapchain image is ready for use
 pub fn acquire(swapchain: *Swapchain, ctx: *const Context, signal: vk.Semaphore) error{AcquireFailed}!vk.Image {
     vk.acquireNextImageKHR(ctx.device, swapchain.handle, std.math.maxInt(u64), signal, null, &swapchain.index) catch |e| switch (e) {

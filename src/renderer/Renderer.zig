@@ -2,23 +2,28 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const log = std.log.scoped(.AssetManager);
+const log = std.log.scoped(.Renderer);
 
 const Gltf = @import("zgltf").Gltf;
 pub const c = @import("c");
 const vk = @import("vk");
 
-const ktx = @import("ktx.zig");
-const sdl = @import("sdl.zig");
-const vma = @import("vma.zig");
-const zkf = @import("zkf.zig");
-const math = @import("math.zig");
-const gpu = @import("gpu_structs.zig");
-const ObjectPool = zkf.ObjectPool;
-const Context = zkf.Context;
-const Buffer = zkf.Buffer;
+//root
+const ktx = @import("../ktx.zig");
+const sdl = @import("../sdl.zig");
+const vma = @import("../vma.zig");
+const zkf = @import("../zkf.zig");
+const math = @import("../math.zig");
 
-const AssetManager = @This();
+//render
+pub const Context = @import("VkContext.zig").Context;
+const gpu = @import("structs.zig");
+const buffers = @import("buffers.zig");
+const Buffer = buffers.Buffer;
+
+const ObjectPool = zkf.ObjectPool;
+
+const Renderer = @This();
 
 pub const ImageHandle = enum(u32) {
     empty = std.math.maxInt(u32),
@@ -36,6 +41,7 @@ pub const ImageR = struct {
 //resources
 images: ObjectPool(ImageR),
 
+//these need to be allocatable
 vertices: Buffer,
 vert_offset: u64,
 indices: Buffer,
@@ -65,8 +71,8 @@ pub const Limits = struct {
 };
 const limits: Limits = .{ .sampled_image = 1000, .storage_image = 100, .sampler = 24, .vertex_buffer_size = 1 << 24, .index_buffer_size = 1 << 22 };
 
-pub fn init(ctx: Context, gpa: std.mem.Allocator) !AssetManager {
-    var out: AssetManager = undefined;
+pub fn init(ctx: Context, gpa: std.mem.Allocator) !Renderer {
+    var out: Renderer = undefined;
     out.images = try .init(gpa, limits.sampled_image + limits.storage_image);
     out.sampled = try .init(gpa, limits.sampled_image);
     out.storage = try .init(gpa, limits.storage_image);
@@ -153,7 +159,7 @@ pub fn init(ctx: Context, gpa: std.mem.Allocator) !AssetManager {
 
     const vertex_ci: vk.BufferCreateInfo = .{
         .size = limits.vertex_buffer_size,
-        .usage = .{ .shader_device_address = true },
+        .usage = .{ .shader_device_address = true, .storage_buffer = true },
     };
     out.vertices = try .init(ctx.vka, vertex_ci, .mapped_vram);
     try vk.nameHandle(ctx.device, out.vertices.handle, "Vertices Buffer");
@@ -169,7 +175,7 @@ pub fn init(ctx: Context, gpa: std.mem.Allocator) !AssetManager {
     return out;
 }
 
-pub fn deinit(manager: *AssetManager, ctx: Context, gpa: std.mem.Allocator) void {
+pub fn deinit(manager: *Renderer, ctx: Context, gpa: std.mem.Allocator) void {
     vk.destroySemaphore(ctx.device, manager.upload_semaphore, null);
     vk.destroyDescriptorPool(ctx.device, manager.descriptor_pool, null);
     vk.destroyDescriptorSetLayout(ctx.device, manager.descriptor_layout, null);
@@ -191,20 +197,20 @@ pub const Hate = struct {
     sampled: ViewHandle,
 };
 
-pub fn loadTextureFromFile(manager: *AssetManager, ctx: *const Context, gpa: std.mem.Allocator, cp: vk.CommandPool, filename: [:0]const u8) !Hate {
+pub fn loadTextureFromFile(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocator, cp: vk.CommandPool, filename: [:0]const u8) !Hate {
     log.debug("attempting to open {q}", .{filename});
     var texture: *ktx.Texture = try .fromNamedFile(filename.ptr, .{ .load_image_data_bit = true });
     defer texture.destroy();
     return loadTexture(manager, ctx, gpa, cp, texture);
 }
 
-pub fn loadTextureFromMemory(manager: *AssetManager, ctx: *const Context, gpa: std.mem.Allocator, cp: vk.CommandPool, memory: []const u8) !Hate {
+pub fn loadTextureFromMemory(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocator, cp: vk.CommandPool, memory: []const u8) !Hate {
     var texture: *ktx.Texture = try .fromMemory(memory, .{ .load_image_data_bit = true });
     defer texture.destroy();
     return loadTexture(manager, ctx, gpa, cp, texture);
 }
 
-pub fn loadTexture(manager: *AssetManager, ctx: *const Context, gpa: std.mem.Allocator, cp: vk.CommandPool, texture: *ktx.Texture) !Hate {
+pub fn loadTexture(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocator, cp: vk.CommandPool, texture: *ktx.Texture) !Hate {
     const format: vk.Format = @enumFromInt(texture.getVkFormat());
     var image_ci: vk.ImageCreateInfo = .{
         .arrayLayers = texture.numLayers,
@@ -360,7 +366,7 @@ pub const Model = struct {
 };
 
 fn getHate(
-    manager: *AssetManager,
+    manager: *Renderer,
     io: Io,
     gpa: Allocator,
     ctx: *const Context,
@@ -384,7 +390,7 @@ fn getHate(
 }
 
 const IndexType = u32;
-pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.mem.Allocator, cp: vk.CommandPool, path: []const u8) !Model {
+pub fn loadGltf(manager: *Renderer, ctx: *const Context, io: Io, gpa: std.mem.Allocator, cp: vk.CommandPool, path: []const u8) !Model {
     log.debug("Loading {q}", .{path});
 
     var out: Model = undefined;
@@ -515,7 +521,7 @@ pub fn loadGltf(manager: *AssetManager, ctx: *const Context, io: Io, gpa: std.me
     return out;
 }
 
-pub fn loadObj(manager: *AssetManager, arena: std.mem.Allocator, io: *std.Io, path: [*:0]const u8) !Mesh {
+pub fn loadObj(manager: *Renderer, arena: std.mem.Allocator, io: *std.Io, path: [*:0]const u8) !Mesh {
     var attrib: c.tinyobj_attrib_t = undefined;
     var shapes_num: usize = 0;
     var shapes: ?[*]c.tinyobj_shape_t = null;
@@ -566,7 +572,7 @@ pub fn loadObj(manager: *AssetManager, arena: std.mem.Allocator, io: *std.Io, pa
     };
 }
 
-pub fn addMesh(manager: *AssetManager, indices: []const IndexType, vertices: []const gpu.Vertex) Mesh {
+pub fn addMesh(manager: *Renderer, indices: []const IndexType, vertices: []const gpu.Vertex) Mesh {
     const mesh: Mesh = .{
         .start_vertex = @intCast(manager.vert_offset / @sizeOf(gpu.Vertex)),
         .start_index = @intCast(manager.idx_offset / @sizeOf(IndexType)),
@@ -581,7 +587,7 @@ pub fn addMesh(manager: *AssetManager, indices: []const IndexType, vertices: []c
 }
 
 //TODO:
-pub fn transferToImage(manager: *AssetManager, target: ImageHandle, buffer: vk.Buffer, regions: []vk.BufferImageCopy, level_count: u32, layer_count: u32) void {
+pub fn transferToImage(manager: *Renderer, target: ImageHandle, buffer: vk.Buffer, regions: []vk.BufferImageCopy, level_count: u32, layer_count: u32) void {
     const image = manager.getImage(target);
 
     const transfer_start_barrier: vk.ImageMemoryBarrier2 = .{
@@ -618,7 +624,7 @@ pub fn transferToImage(manager: *AssetManager, target: ImageHandle, buffer: vk.B
     vk.cmdPipelineBarrier2(manager.command_buffer, &dep_info);
 }
 
-pub fn allocImage(manager: *AssetManager, ctx: *const Context, ci: vk.ImageCreateInfo) !ImageHandle {
+pub fn allocImage(manager: *Renderer, ctx: *const Context, ci: vk.ImageCreateInfo) !ImageHandle {
     const idx = try manager.images.push(undefined);
     const image = manager.images.getPtr(idx);
     const ai: vma.AllocationCreateInfo = .{ .usage = .auto };
@@ -626,18 +632,18 @@ pub fn allocImage(manager: *AssetManager, ctx: *const Context, ci: vk.ImageCreat
     return @enumFromInt(idx);
 }
 
-pub fn freeImage(manager: *AssetManager, ctx: *const Context, handle: ImageHandle) void {
+pub fn freeImage(manager: *Renderer, ctx: *const Context, handle: ImageHandle) void {
     const idx = @intFromEnum(handle);
     const image = manager.images.get(idx);
     vma.destroyImage(ctx.vka, image.handle, image.allocation);
     manager.images.pop(idx);
 }
 
-pub fn getImage(manager: *AssetManager, handle: ImageHandle) vk.Image {
+pub fn getImage(manager: *Renderer, handle: ImageHandle) vk.Image {
     return manager.images.get(@intFromEnum(handle)).handle;
 }
 
-pub fn allocSampledImage(manager: *AssetManager, ctx: *const Context, ci: vk.ImageViewCreateInfo) !ViewHandle {
+pub fn allocSampledImage(manager: *Renderer, ctx: *const Context, ci: vk.ImageViewCreateInfo) !ViewHandle {
     const idx = try manager.sampled.push(undefined);
     const view = manager.sampled.getPtr(idx);
     try vk.createImageView(ctx.device, &ci, null, view);
@@ -655,7 +661,7 @@ pub fn allocSampledImage(manager: *AssetManager, ctx: *const Context, ci: vk.Ima
     return @enumFromInt(idx);
 }
 
-pub fn freeSampledImage(manager: *AssetManager, ctx: *const Context, handle: ViewHandle) void {
+pub fn freeSampledImage(manager: *Renderer, ctx: *const Context, handle: ViewHandle) void {
     if (handle == .empty) return;
     const idx: u32 = @intFromEnum(handle);
     const view = manager.sampled.get(idx);
@@ -663,11 +669,11 @@ pub fn freeSampledImage(manager: *AssetManager, ctx: *const Context, handle: Vie
     manager.sampled.pop(idx);
 }
 
-pub fn getSampledImage(manager: *AssetManager, handle: ViewHandle) vk.ImageView {
+pub fn getSampledImage(manager: *Renderer, handle: ViewHandle) vk.ImageView {
     return manager.sampled.get(@intFromEnum(handle));
 }
 
-pub fn allocStorageImage(manager: *AssetManager, ctx: *const Context, ci: vk.ImageViewCreateInfo) !ViewHandle {
+pub fn allocStorageImage(manager: *Renderer, ctx: *const Context, ci: vk.ImageViewCreateInfo) !ViewHandle {
     const idx = try manager.storage.push(undefined);
     const view = manager.storage.getPtr(idx);
     try vk.createImageView(ctx.device, &ci, null, view);
@@ -685,18 +691,18 @@ pub fn allocStorageImage(manager: *AssetManager, ctx: *const Context, ci: vk.Ima
     return @enumFromInt(idx);
 }
 
-pub fn freeStorageImage(manager: *AssetManager, ctx: *const Context, handle: ViewHandle) void {
+pub fn freeStorageImage(manager: *Renderer, ctx: *const Context, handle: ViewHandle) void {
     const idx: u32 = @intFromEnum(handle);
     const view = manager.storage.get(idx);
     vk.destroyImageView(ctx.device, view, null);
     manager.storage.pop(idx);
 }
 
-pub fn getStorageImage(manager: *AssetManager, handle: ViewHandle) vk.ImageView {
+pub fn getStorageImage(manager: *Renderer, handle: ViewHandle) vk.ImageView {
     return manager.storage.get(@intFromEnum(handle));
 }
 
-pub fn popHate(manager: *AssetManager, ctx: *const Context, hate: Hate) void {
+pub fn popHate(manager: *Renderer, ctx: *const Context, hate: Hate) void {
     manager.freeImage(ctx, hate.image);
     manager.freeSampledImage(ctx, hate.sampled);
 }

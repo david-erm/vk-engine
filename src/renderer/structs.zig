@@ -1,10 +1,11 @@
 //NOTE: This has to be maintained in sync with src/shaders/structs.slang
 //TODO: maybe gen that file from this?
-const math = @import("math.zig");
+const math = @import("../math.zig");
 const vk = @import("vk");
 
 const Vec3 = math.Vec3;
 const Vec2 = math.Vec2;
+const Pose = math.Pose;
 const Quat = math.Quat;
 
 pub const Material = extern struct {
@@ -13,12 +14,6 @@ pub const Material = extern struct {
     normal: u32,
     occlusion: u32,
     emisisve: u32,
-};
-
-pub const Pose = extern struct {
-    pos: Vec3 = .{},
-    extra: f32 = 1,
-    rot: Quat = .identity,
 };
 
 pub const Vertex = extern struct {

@@ -25,6 +25,8 @@
 - separate type definitions into its own module so that generated files can consume them?
 - doing collisions via simpler meshes 
 - intrusive free list downsides?
+- binary blop with compile time enums that index into offset information
+- or ig should probably be runtime
 
 
 

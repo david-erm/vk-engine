@@ -10,11 +10,9 @@ const math = @import("math.zig");
 
 pub const Vec3 = math.Vec3;
 pub const Quat = math.Quat;
-pub const Pose = @import("gpu_structs.zig").Pose;
+pub const Pose = math.Pose;
 
-const vk_extensions = @import("vk_extensions");
-
-pub const AssetManager = @import("AssetManager.zig");
+pub const Renderer = @import("renderer/Renderer.zig");
 
 const log = std.log.scoped(.howtovulkan);
 
@@ -28,134 +26,6 @@ pub fn makeError(err: type, ret: anytype) err!void {
         },
     }
 }
-
-pub const Context = struct {
-    instance: vk.Instance,
-    pdevice: vk.PhysicalDevice,
-    device: vk.Device,
-    queue: vk.Queue,
-    vka: vma.Allocator,
-    qfamily: u32,
-
-    pub fn deinit(ctx: *Context) void {
-        defer sdl.deinit();
-        defer vk.destroyInstance(ctx.instance, null);
-        defer vk.destroyDevice(ctx.device, null);
-        defer vma.destroyAllocator(ctx.vka);
-    }
-
-    pub fn init(arena: std.mem.Allocator) !Context {
-        var ctx: Context = undefined;
-        try sdl.init(.{ .video = true });
-        try sdl.vulkan.loadLibrary(null);
-        const instanceProcAddr = sdl.vulkan.getInstanceProcAddr();
-
-        vk.load(instanceProcAddr);
-
-        const platform_extensions = try sdl.vulkan.getInstanceExtensions();
-        var extensions: std.ArrayList([*:0]const u8) = .empty;
-
-        try extensions.appendSlice(arena, platform_extensions);
-        for (vk_extensions.instance_extensions) |ext| {
-            try extensions.append(arena, ext.ptr);
-        }
-
-        const app_info: vk.ApplicationInfo = .{
-            .apiVersion = vk.makeApiVersion(0, 1, 3, 0),
-            .pApplicationName = "howtovulkna",
-            .applicationVersion = vk.makeApiVersion(0, 1, 0, 0),
-            .pEngineName = "zkf",
-            .engineVersion = vk.makeApiVersion(0, 1, 0, 0),
-        };
-        try vk.createInstance(&.{
-            .pApplicationInfo = &app_info,
-            .enabledExtensionCount = @intCast(extensions.items.len),
-            .ppEnabledExtensionNames = extensions.items.ptr,
-        }, null, &ctx.instance);
-        vk.loadInstance(ctx.instance);
-
-        var device_count: u32 = 0;
-        try vk.enumeratePhysicalDevices(ctx.instance, &device_count, null);
-        const devices = try arena.alloc(vk.PhysicalDevice, device_count);
-        try vk.enumeratePhysicalDevices(ctx.instance, &device_count, devices.ptr);
-        const device_index: u32 = 0;
-        ctx.pdevice = devices[device_index];
-
-        for (devices) |d| {
-            var dp: vk.PhysicalDeviceProperties2 = .{};
-            vk.getPhysicalDeviceProperties2(d, &dp);
-            log.info("dev: {s}", .{dp.properties.deviceName});
-            var features: vk.PhysicalDeviceFeatures2 = .{};
-            vk.getPhysicalDeviceFeatures2(d, &features);
-        }
-
-        var device_properties: vk.PhysicalDeviceProperties2 = .{};
-        vk.getPhysicalDeviceProperties2(devices[device_index], &device_properties);
-        log.info("Selected device: {s}", .{device_properties.properties.deviceName});
-
-        var queue_count: u32 = 0;
-        ctx.qfamily = 0;
-        vk.getPhysicalDeviceQueueFamilyProperties(ctx.pdevice, &queue_count, null);
-        const queue_families = try arena.alloc(vk.QueueFamilyProperties, queue_count);
-        vk.getPhysicalDeviceQueueFamilyProperties(ctx.pdevice, &queue_count, queue_families.ptr);
-        while (!(queue_families[ctx.qfamily].queueFlags.graphics and queue_families[ctx.qfamily].queueFlags.compute)) : (ctx.qfamily += 1) {}
-        try sdl.vulkan.getPresentationSupport(ctx.instance, ctx.pdevice, ctx.qfamily);
-
-        const qfpriorities: [1]f32 = .{1.0};
-        const queueCI: vk.DeviceQueueCreateInfo = .{
-            .queueFamilyIndex = ctx.qfamily,
-            .queueCount = 1,
-            .pQueuePriorities = &qfpriorities,
-        };
-        var enableVK12Features: vk.PhysicalDeviceVulkan12Features = .{
-            .descriptorIndexing = .True,
-            .runtimeDescriptorArray = .True,
-            .bufferDeviceAddress = .True,
-            .timelineSemaphore = .True,
-            .shaderSampledImageArrayNonUniformIndexing = .True,
-            .descriptorBindingPartiallyBound = .True,
-            .scalarBlockLayout = .True,
-            //turned off, was used at some point
-            .descriptorBindingUpdateUnusedWhilePending = .False,
-        };
-        const enableVK13Features: vk.PhysicalDeviceVulkan13Features = .{
-            .pNext = &enableVK12Features,
-            .synchronization2 = .True,
-            .dynamicRendering = .True,
-        };
-        const enableVKFeatures: vk.PhysicalDeviceFeatures = .{
-            .samplerAnisotropy = .True,
-        };
-        var dev_extensions: std.ArrayList([*:0]const u8) = .empty;
-        for (vk_extensions.device_extensions) |ext| {
-            try dev_extensions.append(arena, ext.ptr);
-        }
-        try vk.createDevice(ctx.pdevice, &.{
-            .pNext = &enableVK13Features,
-            .queueCreateInfoCount = 1,
-            .pQueueCreateInfos = @ptrCast(&queueCI),
-            .enabledExtensionCount = 1,
-            .ppEnabledExtensionNames = dev_extensions.items.ptr,
-            .pEnabledFeatures = &enableVKFeatures,
-        }, null, &ctx.device);
-        vk.loadDevice(ctx.device);
-        vk.getDeviceQueue(ctx.device, ctx.qfamily, 0, &ctx.queue);
-
-        const vkFuncs: vma.VulkanFunctions = .{
-            .vkGetInstanceProcAddr = vk.table.instance.vkGetInstanceProcAddr,
-            .vkGetDeviceProcAddr = vk.table.device.vkGetDeviceProcAddr,
-        };
-        try vma.createAllocator(&.{
-            .flags = .{ .BufferDeviceAddressBit = 1 },
-            .physicalDevice = ctx.pdevice,
-            .device = ctx.device,
-            .pVulkanFunctions = &vkFuncs,
-            .instance = ctx.instance,
-        }, &ctx.vka);
-
-        return ctx;
-    }
-};
 
 pub fn ObjectPool(T: type) type {
     return struct {
@@ -212,37 +82,6 @@ pub fn ObjectPool(T: type) type {
         }
     };
 }
-
-pub const Buffer = struct {
-    handle: vk.Buffer,
-    alloc: vma.Allocation,
-    alloci: vma.AllocationInfo,
-
-    pub fn deinit(buff: Buffer, vka: vma.Allocator) void {
-        vma.destroyBuffer(vka, buff.handle, buff.alloc);
-    }
-
-    pub fn init(vka: vma.Allocator, ci: vk.BufferCreateInfo, ai: vma.AllocationCreateInfo) !Buffer {
-        var ret: Buffer = undefined;
-        try vma.createBuffer(vka, &ci, &ai, &ret.handle, &ret.alloc, &ret.alloci);
-        return ret;
-    }
-
-    pub fn write(buff: Buffer, offset: u64, data: anytype) void {
-        switch (@typeInfo(@TypeOf(data))) {
-            .pointer => {
-                @memcpy(@as([*]u8, @ptrCast(@alignCast(buff.alloci.pMappedData.?))) + offset, std.mem.sliceAsBytes(data));
-            },
-            else => {
-                @memcpy(@as([*]u8, @ptrCast(@alignCast(buff.alloci.pMappedData.?))) + offset, std.mem.asBytes(&data));
-            },
-        }
-    }
-
-    pub fn address(buff: Buffer, device: vk.Device) vk.DeviceAddress {
-        return vk.getBufferDeviceAddress(device, &.{ .buffer = buff.handle });
-    }
-};
 
 pub const Camera = struct {
     const pitch_limit = std.math.pi / 2.0 - 0.1;

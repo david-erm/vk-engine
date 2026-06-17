@@ -1,5 +1,7 @@
 const std = @import("std");
 
+//TODO: pls gen Vector types
+// maybe just cope with no member functions and have free functions instead
 pub const Vec4 = extern struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -153,6 +155,12 @@ pub const Quat = extern struct {
             .r = q1.r * q2.r - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z,
         };
     }
+};
+
+pub const Pose = extern struct {
+    pos: Vec3 = .{},
+    extra: f32 = 1,
+    rot: Quat = .identity,
 };
 
 test "sanity check" {

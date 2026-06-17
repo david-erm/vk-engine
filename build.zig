@@ -232,7 +232,6 @@ pub fn compileShaders(
             "-Wno-39001",
             "-fvk-use-scalar-layout",
             "-matrix-layout-column-major",
-            "-O1",
             "-target",
             "spirv",
         });

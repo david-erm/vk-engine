@@ -9,8 +9,11 @@ const c = @import("c");
 const zkf = @import("zkf.zig");
 const sdl = @import("sdl.zig");
 const math = @import("math.zig");
-const gpu = @import("gpu_structs.zig");
-const Swapchain = @import("Swapchain.zig");
+
+const gpu = @import("renderer/structs.zig");
+const bufs = @import("renderer/buffers.zig");
+const Swapchain = @import("renderer/Swapchain.zig");
+const Renderer = @import("renderer/Renderer.zig");
 
 const Vertex = math.Vertex;
 const Vec3 = math.Vec3;
@@ -20,6 +23,9 @@ const Quat = math.Quat;
 const Vec2 = math.Vec2;
 const Pose = zkf.Pose;
 const Camera = zkf.Camera;
+
+//build
+const vk_extensions = @import("vk_extensions");
 
 pub fn getShaderModule(device: vk.Device, shader: anytype) !vk.ShaderModule {
     var module: vk.ShaderModule = undefined;
@@ -39,11 +45,10 @@ const Glyph = struct {
     advance: f32 = 0,
 };
 var charmap: std.AutoHashMapUnmanaged(u21, Glyph) = .empty;
+var space_advance: f32 = undefined;
 
 const max_frames = 2;
 var cam: Camera = .{ .pose = .{ .pos = .{ .z = 6.0 }, .rot = .identity, .extra = 0 } };
-
-var space_advance: f32 = undefined;
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -54,8 +59,32 @@ pub fn main(init: std.process.Init) !void {
     var arena_frame = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const a_frame = arena_frame.allocator();
 
-    var ctx: zkf.Context = try .init(a_startup);
+    try sdl.init(.{ .video = true });
+    defer sdl.deinit();
+    try sdl.vulkan.loadLibrary(null);
+
+    var instance_extensions: std.ArrayList([*:0]const u8) = .empty;
+    const sdl_extensions = try sdl.vulkan.getInstanceExtensions();
+
+    try instance_extensions.appendSlice(a_startup, sdl_extensions);
+    for (vk_extensions.instance_extensions) |ext| {
+        try instance_extensions.append(a_startup, ext.ptr);
+    }
+
+    var device_extensions: std.ArrayList([*:0]const u8) = .empty;
+    for (vk_extensions.device_extensions) |ext| {
+        try device_extensions.append(a_startup, ext.ptr);
+    }
+
+    var ctx: Renderer.Context = try .init(
+        a_startup,
+        instance_extensions.items,
+        device_extensions.items,
+        sdl.vulkan.getInstanceProcAddr(),
+    );
     defer ctx.deinit();
+
+    try sdl.vulkan.getPresentationSupport(ctx.instance, ctx.pdevice, ctx.qfamily);
 
     var window_extent: vk.Extent2D = .{ .width = 1920, .height = 1080 };
     const window = try sdl.createWindow("hello", @intCast(window_extent.width), @intCast(window_extent.height), .{
@@ -75,8 +104,8 @@ pub fn main(init: std.process.Init) !void {
     var swapchain: Swapchain = try .init(&ctx, gpa, surface, window_extent);
     defer swapchain.deinit(&ctx, gpa);
 
-    var asset: zkf.AssetManager = try .init(ctx, gpa);
-    defer asset.deinit(ctx, gpa);
+    var renderer: Renderer = try .init(ctx, gpa);
+    defer renderer.deinit(ctx, gpa);
 
     var offscreen_image_ci: vk.ImageCreateInfo = .{
         .imageType = .@"2d",
@@ -87,11 +116,11 @@ pub fn main(init: std.process.Init) !void {
         .mipLevels = 1,
         .arrayLayers = 1,
     };
-    var offscreen = try asset.allocImage(&ctx, offscreen_image_ci);
-    defer asset.freeImage(&ctx, offscreen);
-    try vk.nameHandle(ctx.device, asset.getImage(offscreen), "Offscreen Render");
+    var offscreen = try renderer.allocImage(&ctx, offscreen_image_ci);
+    defer renderer.freeImage(&ctx, offscreen);
+    try vk.nameHandle(ctx.device, renderer.getImage(offscreen), "Offscreen Render");
     var offscreen_view_ci: vk.ImageViewCreateInfo = .{
-        .image = asset.getImage(offscreen),
+        .image = renderer.getImage(offscreen),
         .viewType = .@"2d",
         .format = .r16g16b16a16_unorm,
         .subresourceRange = .{
@@ -100,8 +129,8 @@ pub fn main(init: std.process.Init) !void {
             .levelCount = 1,
         },
     };
-    var offscreen_view = try asset.allocStorageImage(&ctx, offscreen_view_ci);
-    defer asset.freeStorageImage(&ctx, offscreen_view);
+    var offscreen_view = try renderer.allocStorageImage(&ctx, offscreen_view_ci);
+    defer renderer.freeStorageImage(&ctx, offscreen_view);
 
     var depth_ci: vk.ImageCreateInfo = .{
         .imageType = .@"2d",
@@ -112,11 +141,11 @@ pub fn main(init: std.process.Init) !void {
         .mipLevels = 1,
         .arrayLayers = 1,
     };
-    var depth_buffer = try asset.allocImage(&ctx, depth_ci);
-    defer asset.freeImage(&ctx, depth_buffer);
-    try vk.nameHandle(ctx.device, asset.getImage(depth_buffer), "Depth Buffer");
+    var depth_buffer = try renderer.allocImage(&ctx, depth_ci);
+    defer renderer.freeImage(&ctx, depth_buffer);
+    try vk.nameHandle(ctx.device, renderer.getImage(depth_buffer), "Depth Buffer");
     var depth_view_ci: vk.ImageViewCreateInfo = .{
-        .image = asset.getImage(depth_buffer),
+        .image = renderer.getImage(depth_buffer),
         .viewType = .@"2d",
         .format = .d32_sfloat,
         .subresourceRange = .{
@@ -125,8 +154,8 @@ pub fn main(init: std.process.Init) !void {
             .levelCount = 1,
         },
     };
-    var depth_view = try asset.allocSampledImage(&ctx, depth_view_ci);
-    defer asset.freeSampledImage(&ctx, depth_view);
+    var depth_view = try renderer.allocSampledImage(&ctx, depth_view_ci);
+    defer renderer.freeSampledImage(&ctx, depth_view);
 
     var commandPool: vk.CommandPool = undefined;
     var command_buffers: [max_frames]vk.CommandBuffer = undefined;
@@ -138,38 +167,38 @@ pub fn main(init: std.process.Init) !void {
         try vk.allocateCommandBuffers(ctx.device, &cmdBufferCI, &command_buffers);
     }
 
-    const suzanne_pulled = try asset.loadObj(a_static, &io, "assets/suzanne.obj");
-    const cube = try asset.loadObj(a_static, &io, "assets/cube.obj");
+    const suzanne_pulled = try renderer.loadObj(a_static, &io, "assets/suzanne.obj");
+    const cube = try renderer.loadObj(a_static, &io, "assets/cube.obj");
     // const plane = asset.addMesh(&quad_indices, @ptrCast(&plane_vertices));
 
-    const helm = try asset.loadGltf(&ctx, io, gpa, commandPool, "zig-out/assets/DamagedHelmet/DamagedHelmet.gltf");
+    const helm = try renderer.loadGltf(&ctx, io, gpa, commandPool, "zig-out/assets/DamagedHelmet/DamagedHelmet.gltf");
     defer {
         for (helm.images) |img| {
-            asset.freeImage(&ctx, img);
+            renderer.freeImage(&ctx, img);
         }
         for (helm.materials) |mat| {
-            asset.freeSampledImage(&ctx, mat.albedo);
-            asset.freeSampledImage(&ctx, mat.normal);
-            asset.freeSampledImage(&ctx, mat.emissive);
-            asset.freeSampledImage(&ctx, mat.occlusion);
-            asset.freeSampledImage(&ctx, mat.metallic_roughness);
+            renderer.freeSampledImage(&ctx, mat.albedo);
+            renderer.freeSampledImage(&ctx, mat.normal);
+            renderer.freeSampledImage(&ctx, mat.emissive);
+            renderer.freeSampledImage(&ctx, mat.occlusion);
+            renderer.freeSampledImage(&ctx, mat.metallic_roughness);
         }
         gpa.free(helm.materials);
         gpa.free(helm.images);
         gpa.free(helm.meshes);
     }
 
-    const sponza = try asset.loadGltf(&ctx, io, gpa, commandPool, "zig-out/assets/Sponza/Sponza.gltf");
+    const sponza = try renderer.loadGltf(&ctx, io, gpa, commandPool, "zig-out/assets/Sponza/Sponza.gltf");
     defer {
         for (sponza.images) |img| {
-            asset.freeImage(&ctx, img);
+            renderer.freeImage(&ctx, img);
         }
         for (sponza.materials) |mat| {
-            asset.freeSampledImage(&ctx, mat.albedo);
-            asset.freeSampledImage(&ctx, mat.normal);
-            asset.freeSampledImage(&ctx, mat.metallic_roughness);
-            asset.freeSampledImage(&ctx, mat.emissive);
-            asset.freeSampledImage(&ctx, mat.occlusion);
+            renderer.freeSampledImage(&ctx, mat.albedo);
+            renderer.freeSampledImage(&ctx, mat.normal);
+            renderer.freeSampledImage(&ctx, mat.metallic_roughness);
+            renderer.freeSampledImage(&ctx, mat.emissive);
+            renderer.freeSampledImage(&ctx, mat.occlusion);
         }
         gpa.free(sponza.materials);
         gpa.free(sponza.images);
@@ -177,7 +206,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const quad_size = @sizeOf(f32) * 6 * 4;
-    const text_quad = try zkf.Buffer.init(ctx.vka, .{
+    const text_quad = try bufs.Buffer.init(ctx.vka, .{
         .size = quad_size * 100,
         .usage = .{ .vertex_buffer = true },
     }, .mapped_vram);
@@ -185,18 +214,18 @@ pub fn main(init: std.process.Init) !void {
 
     //textures
 
-    var handles: [3]zkf.AssetManager.Hate = undefined;
+    var handles: [3]Renderer.Hate = undefined;
     defer for (handles) |handle| {
-        asset.popHate(&ctx, handle);
+        renderer.popHate(&ctx, handle);
     };
     for (0..3) |i| {
         var buf: [128]u8 = @splat(0);
         const filename = try std.fmt.bufPrintSentinel(&buf, "assets/suzanne{}.ktx2", .{i}, 0);
-        handles[i] = try asset.loadTextureFromFile(&ctx, gpa, commandPool, filename);
+        handles[i] = try renderer.loadTextureFromFile(&ctx, gpa, commandPool, filename);
     }
 
-    const handle2 = try asset.loadTextureFromFile(&ctx, gpa, commandPool, "assets/skybox.ktx2");
-    defer asset.popHate(&ctx, handle2);
+    const handle2 = try renderer.loadTextureFromFile(&ctx, gpa, commandPool, "assets/skybox.ktx2");
+    defer renderer.popHate(&ctx, handle2);
 
     //fonts
     var ft: c.FT_Library = undefined;
@@ -225,13 +254,13 @@ pub fn main(init: std.process.Init) !void {
         .mipLevels = 1,
         .arrayLayers = 1,
     };
-    const font_atlas = try asset.allocImage(&ctx, atlas_ci);
-    defer asset.freeImage(&ctx, font_atlas);
-    try vk.nameHandle(ctx.device, asset.getImage(font_atlas), "Font Atlas");
+    const font_atlas = try renderer.allocImage(&ctx, atlas_ci);
+    defer renderer.freeImage(&ctx, font_atlas);
+    try vk.nameHandle(ctx.device, renderer.getImage(font_atlas), "Font Atlas");
 
     const atlas_view_ci: vk.ImageViewCreateInfo = .{
         .format = .r8_unorm,
-        .image = asset.getImage(font_atlas),
+        .image = renderer.getImage(font_atlas),
         .viewType = .@"2d",
         .subresourceRange = .{
             .aspectMask = .{ .color = true },
@@ -239,8 +268,8 @@ pub fn main(init: std.process.Init) !void {
             .levelCount = 1,
         },
     };
-    const atlas_view = try asset.allocSampledImage(&ctx, atlas_view_ci);
-    defer asset.freeSampledImage(&ctx, atlas_view);
+    const atlas_view = try renderer.allocSampledImage(&ctx, atlas_view_ci);
+    defer renderer.freeSampledImage(&ctx, atlas_view);
 
     const semaphore_type: vk.SemaphoreTypeCreateInfo = .{ .semaphoreType = .timeline };
     const semaphore_ci: vk.SemaphoreCreateInfo = .{ .pNext = &semaphore_type };
@@ -252,7 +281,7 @@ pub fn main(init: std.process.Init) !void {
     const glyph_size = font_size * font_size;
     const transfer_buffer_size = 5;
     const transfer_ci: vk.BufferCreateInfo = .{ .size = glyph_size * transfer_buffer_size, .usage = .{ .transfer_src = true } };
-    const transfer_buffer: zkf.Buffer = try .init(ctx.vka, transfer_ci, .mapped_vram);
+    const transfer_buffer: bufs.Buffer = try .init(ctx.vka, transfer_ci, .mapped_vram);
     defer transfer_buffer.deinit(ctx.vka);
 
     var cmd_buf: vk.CommandBuffer = undefined;
@@ -270,7 +299,7 @@ pub fn main(init: std.process.Init) !void {
             .dstAccessMask = .{ .transfer_write = true },
             .oldLayout = .undefined,
             .newLayout = .transfer_dst_optimal,
-            .image = asset.getImage(font_atlas),
+            .image = renderer.getImage(font_atlas),
             .subresourceRange = .{
                 .aspectMask = .{ .color = true },
                 .levelCount = 1,
@@ -326,7 +355,7 @@ pub fn main(init: std.process.Init) !void {
                 },
                 .bufferOffset = transfer_offset * glyph_size,
             };
-            vk.cmdCopyBufferToImage(cmd_buf, transfer_buffer.handle, asset.getImage(font_atlas), .transfer_dst_optimal, 1, &.{copy_test});
+            vk.cmdCopyBufferToImage(cmd_buf, transfer_buffer.handle, renderer.getImage(font_atlas), .transfer_dst_optimal, 1, &.{copy_test});
             transfer_offset += 1;
 
             out.uv = .{
@@ -376,7 +405,7 @@ pub fn main(init: std.process.Init) !void {
         .srcAccessMask = .{ .transfer_write = true },
         .oldLayout = .transfer_dst_optimal,
         .newLayout = .read_only_optimal,
-        .image = asset.getImage(font_atlas),
+        .image = renderer.getImage(font_atlas),
         .subresourceRange = .{
             .aspectMask = .{ .color = true },
             .levelCount = 1,
@@ -416,7 +445,7 @@ pub fn main(init: std.process.Init) !void {
             .pushConstantRangeCount = shaders.pbr.push_constant_ranges.len,
             .pPushConstantRanges = &shaders.pbr.push_constant_ranges,
             .setLayoutCount = 1,
-            .pSetLayouts = @ptrCast(&asset.descriptor_layout),
+            .pSetLayouts = @ptrCast(&renderer.descriptor_layout),
         };
         try vk.createPipelineLayout(ctx.device, &ci, null, &pipeline_layout);
     }
@@ -546,7 +575,7 @@ pub fn main(init: std.process.Init) !void {
     {
         const ci: vk.PipelineLayoutCreateInfo = .{
             .setLayoutCount = 1,
-            .pSetLayouts = @ptrCast(&asset.descriptor_layout),
+            .pSetLayouts = @ptrCast(&renderer.descriptor_layout),
             .pushConstantRangeCount = shaders.box.push_constant_ranges.len,
             .pPushConstantRanges = @ptrCast(&shaders.box.push_constant_ranges),
         };
@@ -566,7 +595,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     //TODO: function that adds buffered buffer to asset manager?
-    var scene_buffer: [max_frames]zkf.Buffer = undefined;
+    var scene_buffer: [max_frames]bufs.Buffer = undefined;
     defer for (scene_buffer) |buffer| {
         buffer.deinit(ctx.vka);
     };
@@ -579,7 +608,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const thing_limit = 100;
-    var poses_buffer: [max_frames]zkf.Buffer = undefined;
+    var poses_buffer: [max_frames]bufs.Buffer = undefined;
     defer for (poses_buffer) |buffer| {
         buffer.deinit(ctx.vka);
     };
@@ -591,13 +620,13 @@ pub fn main(init: std.process.Init) !void {
         buffer.* = try .init(ctx.vka, ci, .mapped_vram);
     }
     const mat_limit = 100;
-    var mat_buf: [max_frames]zkf.Buffer = undefined;
+    var mat_buf: [max_frames]bufs.Buffer = undefined;
     defer for (mat_buf) |buf| {
         buf.deinit(ctx.vka);
     };
     for (&mat_buf) |*buf| {
         const ci: vk.BufferCreateInfo = .{
-            .size = @sizeOf(zkf.AssetManager.Material) * mat_limit,
+            .size = @sizeOf(gpu.Material) * mat_limit,
             .usage = .{ .shader_device_address = true },
         };
         buf.* = try .init(ctx.vka, ci, .mapped_vram);
@@ -631,7 +660,7 @@ pub fn main(init: std.process.Init) !void {
     //"game stuff"
     var scene: gpu.Scene = .{};
     var poses: [thing_limit]Pose = @splat(.{});
-    var mats: [mat_limit]zkf.AssetManager.Material = @splat(.{});
+    var mats: [mat_limit]Renderer.Material = @splat(.{});
     var sel: u32 = 0;
 
     //some stats
@@ -722,7 +751,7 @@ pub fn main(init: std.process.Init) !void {
         scene.cam = cam.pose;
         scene.selected = sel;
         scene.light_pos.x = @as(f32, @floatCast(@sin(std.math.pi * flast * 0.25))) * 4.0;
-        scene.light_pos.y = @as(f32, @floatCast(@sin(std.math.pi * flast * 0.25))) * 4.0 - 4;
+        scene.light_pos.y = @as(f32, @floatCast(@sin(std.math.pi * flast * 0.125))) * 4.0 - 4;
         for (0..3) |i| {
             const idx: f32 = @floatFromInt(i);
             const pos: Vec3 = .{ .x = (idx - 1.0) * 3.0, .y = -(idx), .z = 0.0 };
@@ -765,7 +794,7 @@ pub fn main(init: std.process.Init) !void {
                     .dstAccessMask = .{ .color_attachment_read = true, .color_attachment_write = true },
                     .oldLayout = .undefined,
                     .newLayout = .attachment_optimal,
-                    .image = asset.getImage(offscreen),
+                    .image = renderer.getImage(offscreen),
                     .subresourceRange = .{ .aspectMask = .{ .color = true }, .levelCount = 1, .layerCount = 1 },
                 },
                 .{
@@ -785,21 +814,21 @@ pub fn main(init: std.process.Init) !void {
                     .dstAccessMask = .{ .depth_stencil_attachment_write = true },
                     .oldLayout = .undefined,
                     .newLayout = .attachment_optimal,
-                    .image = asset.getImage(depth_buffer),
+                    .image = renderer.getImage(depth_buffer),
                     .subresourceRange = .{ .aspectMask = .{ .depth = true }, .levelCount = 1, .layerCount = 1 },
                 },
             };
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 3, .pImageMemoryBarriers = &output_barriers });
 
             const color_attach_info: vk.RenderingAttachmentInfo = .{
-                .imageView = asset.getStorageImage(offscreen_view),
+                .imageView = renderer.getStorageImage(offscreen_view),
                 .imageLayout = .attachment_optimal,
                 .loadOp = .clear,
                 .storeOp = .store,
                 .clearValue = .{ .color = .{ .float32 = .{ 0.0, 0.0, 0.0, 1.0 } } },
             };
             const depth_attach_info: vk.RenderingAttachmentInfo = .{
-                .imageView = asset.getSampledImage(depth_view),
+                .imageView = renderer.getSampledImage(depth_view),
                 .imageLayout = .attachment_optimal,
                 .loadOp = .clear,
                 .storeOp = .dont_care,
@@ -828,12 +857,12 @@ pub fn main(init: std.process.Init) !void {
                 vk.cmdSetScissor(cb, 0, 1, @ptrCast(&scissor));
 
                 vk.cmdBindPipeline(cb, .graphics, pbr_pipeline);
-                vk.cmdBindIndexBuffer(cb, asset.indices.handle, 0, .uint32);
-                vk.cmdBindDescriptorSets(cb, .graphics, pipeline_layout, 0, 1, @ptrCast(&asset.descriptor_set), 0, undefined);
+                vk.cmdBindIndexBuffer(cb, renderer.indices.handle, 0, .uint32);
+                vk.cmdBindDescriptorSets(cb, .graphics, pipeline_layout, 0, 1, @ptrCast(&renderer.descriptor_set), 0, undefined);
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 0, @sizeOf(vk.DeviceAddress), std.mem.asBytes(&scene_buffer[fif_index].address(ctx.device)));
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 8, 8, @ptrCast(&poses_buffer[fif_index].address(ctx.device)));
                 vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 16, 8, @ptrCast(&mat_buf[fif_index].address(ctx.device)));
-                vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 24, 8, @ptrCast(&asset.vertices.address(ctx.device)));
+                vk.cmdPushConstants(cb, pipeline_layout, .{ .vertex = true }, 24, 8, @ptrCast(&renderer.vertices.address(ctx.device)));
 
                 vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Vertex Pulling" });
 
@@ -897,7 +926,7 @@ pub fn main(init: std.process.Init) !void {
 
             vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Post Proccess" });
             vk.cmdBindPipeline(cb, .compute, boxblur_pipeline);
-            vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&asset.descriptor_set), 0, undefined);
+            vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&renderer.descriptor_set), 0, undefined);
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 0, 8, @ptrCast(&mouse_pos));
             vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 8, 4, @ptrCast(&offscreen_view));
             const compute_barrier1: vk.ImageMemoryBarrier2 = .{
@@ -907,7 +936,7 @@ pub fn main(init: std.process.Init) !void {
                 .dstAccessMask = .{ .shader_storage_read = true, .shader_storage_write = true },
                 .oldLayout = .attachment_optimal,
                 .newLayout = .general,
-                .image = asset.getImage(offscreen),
+                .image = renderer.getImage(offscreen),
                 .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
             };
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = @ptrCast(&compute_barrier1) });
@@ -923,7 +952,7 @@ pub fn main(init: std.process.Init) !void {
                 .dstAccessMask = .{ .transfer_read = true },
                 .oldLayout = .general,
                 .newLayout = .transfer_src_optimal,
-                .image = asset.getImage(offscreen),
+                .image = renderer.getImage(offscreen),
                 .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
             };
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = @ptrCast(&transfer_barrier) });
@@ -947,7 +976,7 @@ pub fn main(init: std.process.Init) !void {
                 },
             };
 
-            vk.cmdBlitImage(cb, asset.getImage(offscreen), .transfer_src_optimal, current_image, .general, 1, &.{blit_regions}, .linear);
+            vk.cmdBlitImage(cb, renderer.getImage(offscreen), .transfer_src_optimal, current_image, .general, 1, &.{blit_regions}, .linear);
             vk.cmdEndDebugUtilsLabelEXT(cb);
 
             const present_barrier: vk.ImageMemoryBarrier2 = .{
@@ -992,19 +1021,19 @@ pub fn main(init: std.process.Init) !void {
             try vk.queueWaitIdle(ctx.queue);
             try swapchain.recreate(&ctx, window_extent);
 
-            asset.freeStorageImage(&ctx, offscreen_view);
-            asset.freeImage(&ctx, offscreen);
+            renderer.freeStorageImage(&ctx, offscreen_view);
+            renderer.freeImage(&ctx, offscreen);
             offscreen_image_ci.extent = .{ .width = window_extent.width, .height = window_extent.height, .depth = 1 };
-            offscreen = try asset.allocImage(&ctx, offscreen_image_ci);
-            offscreen_view_ci.image = asset.getImage(offscreen);
-            offscreen_view = try asset.allocStorageImage(&ctx, offscreen_view_ci);
+            offscreen = try renderer.allocImage(&ctx, offscreen_image_ci);
+            offscreen_view_ci.image = renderer.getImage(offscreen);
+            offscreen_view = try renderer.allocStorageImage(&ctx, offscreen_view_ci);
 
-            asset.freeSampledImage(&ctx, depth_view);
-            asset.freeImage(&ctx, depth_buffer);
+            renderer.freeSampledImage(&ctx, depth_view);
+            renderer.freeImage(&ctx, depth_buffer);
             depth_ci.extent = .{ .width = window_extent.width, .height = window_extent.height, .depth = 1 };
-            depth_buffer = try asset.allocImage(&ctx, depth_ci);
-            depth_view_ci.image = asset.getImage(depth_buffer);
-            depth_view = try asset.allocSampledImage(&ctx, depth_view_ci);
+            depth_buffer = try renderer.allocImage(&ctx, depth_ci);
+            depth_view_ci.image = renderer.getImage(depth_buffer);
+            depth_view = try renderer.allocSampledImage(&ctx, depth_view_ci);
         }
     }
     arena_frame.deinit();
