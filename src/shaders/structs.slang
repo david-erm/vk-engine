@@ -1,3 +1,4 @@
+//NOTE: this has to be maintained in sync with src/renderer/structs.zig
 module structs;
 __exported import util;
 

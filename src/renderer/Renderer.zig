@@ -212,6 +212,7 @@ pub fn loadTextureFromMemory(manager: *Renderer, ctx: *const Context, gpa: std.m
 
 pub fn loadTexture(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocator, cp: vk.CommandPool, texture: *ktx.Texture) !Hate {
     const format: vk.Format = @enumFromInt(texture.getVkFormat());
+
     var image_ci: vk.ImageCreateInfo = .{
         .arrayLayers = texture.numLayers,
         .imageType = @enumFromInt(texture.numDimensions - 1),
@@ -220,7 +221,7 @@ pub fn loadTexture(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocat
         .mipLevels = texture.numLevels,
         .samples = .{ .@"1" = true },
         .tiling = .optimal,
-        .usage = .{ .transfer_dst = true, .sampled = true },
+        .usage = .{ .transfer_dst = true, .sampled = true, .transfer_src = true },
         .initialLayout = .undefined,
     };
 
@@ -248,7 +249,7 @@ pub fn loadTexture(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocat
     try vk.beginCommandBuffer(cmd_buf, &cmd_binfo);
 
     const mem_barrier: vk.ImageMemoryBarrier2 = .{
-        .dstStageMask = .{ .all_transfer = true },
+        .dstStageMask = .{ .copy = true },
         .dstAccessMask = .{ .transfer_write = true },
         .oldLayout = .undefined,
         .newLayout = .transfer_dst_optimal,
@@ -265,13 +266,13 @@ pub fn loadTexture(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocat
     };
     vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
 
-    const copy_regions = try gpa.alloc(vk.BufferImageCopy, image_ci.mipLevels * image_ci.arrayLayers);
+    const copy_regions = try gpa.alloc(vk.BufferImageCopy, texture.numLevels * image_ci.arrayLayers);
     defer gpa.free(copy_regions);
     for (0..image_ci.arrayLayers) |i| {
         const layer: u32 = @intCast(i);
-        for (0..image_ci.mipLevels) |j| {
+        for (0..texture.numLevels) |j| {
             const level: u32 = @intCast(j);
-            copy_regions[i * image_ci.mipLevels + j] = vk.BufferImageCopy{
+            copy_regions[i * texture.numLevels + j] = vk.BufferImageCopy{
                 .bufferOffset = try texture.getImageOffset(level, 0, layer),
                 .imageSubresource = .{
                     .aspectMask = .{ .color = true },
@@ -289,9 +290,11 @@ pub fn loadTexture(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocat
     }
     vk.cmdCopyBufferToImage(cmd_buf, img_buffer.handle, image, .transfer_dst_optimal, @intCast(copy_regions.len), copy_regions.ptr);
 
-    const texread_barrier: vk.ImageMemoryBarrier2 = .{
-        .srcStageMask = .{ .all_transfer = true },
+    const barrier: vk.ImageMemoryBarrier2 = .{
+        .srcStageMask = .{ .copy = true },
         .srcAccessMask = .{ .transfer_write = true },
+        .dstStageMask = .{ .fragment_shader = true },
+        .dstAccessMask = .{ .shader_read = true },
         .oldLayout = .transfer_dst_optimal,
         .newLayout = .read_only_optimal,
         .image = image,
@@ -301,8 +304,9 @@ pub fn loadTexture(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocat
             .layerCount = image_ci.arrayLayers,
         },
     };
-    barrier_texinfo.pImageMemoryBarriers = @ptrCast(&texread_barrier);
+    barrier_texinfo.pImageMemoryBarriers = @ptrCast(&barrier);
     vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
+
     try vk.endCommandBuffer(cmd_buf);
 
     const fetch = manager.upload_val.fetchAdd(1, .seq_cst) + 1;

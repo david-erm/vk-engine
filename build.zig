@@ -144,6 +144,7 @@ pub fn buildBake(
     const c_step = b.addTranslateC(.{
         .root_source_file = b.addWriteFiles().add("c.h",
             \\ #include <stb_image.h>
+            \\ #include <stb_image_resize2.h>
             \\ #include <assimp/cimport.h>
             \\ #include <assimp/cexport.h>
             \\ #include <assimp/scene.h>
@@ -160,6 +161,8 @@ pub fn buildBake(
         .file = b.addWriteFiles().add("impl.c",
             \\ #define STB_IMAGE_IMPLEMENTATION
             \\ #include <stb_image.h>
+            \\ #define STB_IMAGE_RESIZE2_IMPLEMENTATION
+            \\ #include <stb_image_resize2.h>
         ),
     });
     cmod.addIncludePath(stb.path(""));

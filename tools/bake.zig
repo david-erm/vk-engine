@@ -222,6 +222,31 @@ pub fn makeKtx(
         else => unreachable,
     };
 
+    const max_mip: u32 = @intCast(std.math.log2(width) + 1);
+    var buf_size: u64 = 0;
+    for (1..max_mip) |i| {
+        const mip: u5 = @intCast(i);
+        buf_size += @intCast((width >> mip) * (height >> mip));
+    }
+    //WARNING: change maybe someimtes
+    const mip_buffer = try init.gpa.alloc(u8, buf_size * 4);
+    defer init.gpa.free(mip_buffer);
+
+    const ci: ktx.Texture.CreateInfo = .{
+        .vkFormat = @intFromEnum(settings.bcn_format),
+        .baseWidth = @intCast(width),
+        .baseHeight = @intCast(height),
+        .numDimensions = 2,
+        .baseDepth = 1,
+        .numLevels = max_mip,
+        .numLayers = 1,
+        .numFaces = 1,
+        .isArray = false,
+        .generateMipmaps = false,
+    };
+    const texture: *ktx.Texture = try .create(&ci, .alloc_storage);
+    defer texture.destroy();
+
     var params: bcn.Params = .{
         .dxgi_format = switch (settings.bcn_format) {
             .bc7_srgb_block => .bc7_unorm,
@@ -232,32 +257,48 @@ pub fn makeKtx(
         .bc45_channel0 = settings.chan0,
         .bc45_channel1 = settings.chan1,
     };
-    var size: u32 = undefined;
-    var handle: bcn.Handle = undefined;
-    var out: [*]const u8 = undefined;
-    if (!bcn.bcn_encode(&params, @intCast(width), @intCast(height), data_ptr, &size, &out, &handle)) {
-        return error.Encode;
+
+    var current_ptr = mip_buffer.ptr;
+    for (0..max_mip) |i| {
+        if (i == 0) {
+            var bcnsize: u32 = undefined;
+            var handle: bcn.Handle = undefined;
+            var out: [*]const u8 = undefined;
+            if (!bcn.bcn_encode(&params, @intCast(width), @intCast(height), data_ptr, &bcnsize, &out, &handle)) {
+                return error.Encode;
+            }
+            defer bcn.bcn_free(handle);
+            try texture.setImageFromMemory(0, 0, 0, out[0..bcnsize]);
+
+            continue;
+        }
+        const mip: u5 = @intCast(i);
+        _ = c.stbir_resize_uint8_linear(
+            data_ptr,
+            width,
+            height,
+            0,
+            current_ptr,
+            width >> mip,
+            height >> mip,
+            0,
+            c.STBIR_RGBA,
+        );
+
+        var bcnsize: u32 = undefined;
+        var handle: bcn.Handle = undefined;
+        var out: [*]const u8 = undefined;
+        if (!bcn.bcn_encode(&params, @intCast(width >> mip), @intCast(height >> mip), current_ptr, &bcnsize, &out, &handle)) {
+            return error.Encode;
+        }
+        defer bcn.bcn_free(handle);
+        try texture.setImageFromMemory(mip, 0, 0, out[0..bcnsize]);
+
+        const size: u64 = @intCast((width >> mip) * (height >> mip) * channel_n);
+        current_ptr += size;
     }
-    defer bcn.bcn_free(handle);
 
-    const ci: ktx.Texture.CreateInfo = .{
-        .vkFormat = @intFromEnum(settings.bcn_format),
-        .baseWidth = @intCast(width),
-        .baseHeight = @intCast(height),
-        .numDimensions = 2,
-        .baseDepth = 1,
-        .numLevels = 1,
-        .numLayers = 1,
-        .numFaces = 1,
-        .isArray = false,
-        .generateMipmaps = true,
-    };
-    const texture: *ktx.Texture = try .create(&ci, .alloc_storage);
-    defer texture.destroy();
-
-    try texture.setImageFromMemory(0, 0, 0, out[0..size]);
     try texture.deflateZstd(22);
-
     const ktx_contents = try texture.writeToMemory();
     defer std.heap.c_allocator.free(ktx_contents);
 
