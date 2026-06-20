@@ -2,6 +2,8 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const MemoryPool = std.heap.memory_pool.Extra;
+
 const log = std.log.scoped(.Renderer);
 
 const Gltf = @import("zgltf").Gltf;
@@ -17,200 +19,167 @@ const math = @import("../math.zig");
 
 //render
 pub const Context = @import("VkContext.zig").Context;
-const gpu = @import("structs.zig");
+const st = @import("structs.zig");
+const IndexType = u32;
+
 const buffers = @import("buffers.zig");
 const Buffer = buffers.Buffer;
 
-const ObjectPool = zkf.ObjectPool;
+const vk_extensions = @import("vk_extensions");
 
 const Renderer = @This();
+
+// LIMITS
+pub const max_frames = 2;
+const max_images = 1000;
+const max_vertices = 3_000_000;
+const max_indices = 1_000_000;
 
 pub const ImageHandle = enum(u32) {
     empty = std.math.maxInt(u32),
     _,
 };
-pub const ViewHandle = enum(u32) {
-    empty = std.math.maxInt(u32),
-    _,
-};
+
 pub const ImageR = struct {
     handle: vk.Image,
+    view: vk.ImageView,
     allocation: vma.Allocation,
 };
 
+ctx: Context,
+//lazy
+cp: vk.CommandPool,
+cmdbuf: [max_frames]vk.CommandBuffer,
+transfer_cmdbuf: vk.CommandBuffer,
+
 //resources
-images: ObjectPool(ImageR),
+images: MemoryPool(ImageR, .{ .growable = false }),
 
-//these need to be allocatable
-vertices: Buffer,
-vert_offset: u64,
-indices: Buffer,
-idx_offset: u64,
+desc_man: buffers.DescriptorManager,
+graphics_layout: vk.PipelineLayout,
 
-//Descriptors stuff
-sampled: ObjectPool(vk.ImageView),
-storage: ObjectPool(vk.ImageView),
-samplers: ObjectPool(vk.Sampler),
+vertices: buffers.GpuMappedPush(st.Vertex),
+indices: buffers.GpuMappedPush(IndexType),
 
-descriptor_set: vk.DescriptorSet,
-descriptor_layout: vk.DescriptorSetLayout,
-descriptor_pool: vk.DescriptorPool,
+//fif?
+loop: buffers.TimelineSemaphore,
+fif_values: [max_frames]u64,
+fif_semaphores: [max_frames]vk.Semaphore,
+fif_index: u64,
+
+materials: buffers.GpuMappedPush(st.Material),
+poses: buffers.GpuMappedPush(st.Pose),
+scene: buffers.GpuMappedPush(st.Scene),
 
 //transfer
+upload: buffers.TimelineSemaphore,
 
-upload_semaphore: vk.Semaphore,
-upload_val: std.atomic.Value(u64),
+pub fn deinit(renderer: *Renderer, gpa: std.mem.Allocator) void {
+    renderer.materials.deinit(renderer.ctx.vka);
+    renderer.poses.deinit(renderer.ctx.vka);
+    renderer.scene.deinit(renderer.ctx.vka);
 
-pub const Limits = struct {
-    sampled_image: u32 = 0,
-    storage_image: u32 = 0,
-    sampler: u32 = 0,
+    renderer.loop.deinit(renderer.ctx.device);
+    renderer.upload.deinit(renderer.ctx.device);
 
-    vertex_buffer_size: u64 = 0,
-    index_buffer_size: u64 = 0,
-};
-const limits: Limits = .{ .sampled_image = 1000, .storage_image = 100, .sampler = 24, .vertex_buffer_size = 1 << 24, .index_buffer_size = 1 << 22 };
+    renderer.vertices.deinit(renderer.ctx.vka);
+    renderer.indices.deinit(renderer.ctx.vka);
 
-pub fn init(ctx: Context, gpa: std.mem.Allocator) !Renderer {
+    vk.destroyPipelineLayout(renderer.ctx.device, renderer.graphics_layout, null);
+    renderer.desc_man.deinit(renderer.ctx.device);
+
+    renderer.images.deinit(gpa);
+
+    vk.destroyCommandPool(renderer.ctx.device, renderer.cp, null);
+    renderer.ctx.deinit();
+    sdl.vulkan.unloadLibrary();
+    sdl.quitSubsystem(.{ .video = true });
+}
+
+pub fn init(gpa: std.mem.Allocator) !Renderer {
     var out: Renderer = undefined;
-    out.images = try .init(gpa, limits.sampled_image + limits.storage_image);
-    out.sampled = try .init(gpa, limits.sampled_image);
-    out.storage = try .init(gpa, limits.storage_image);
-    out.samplers = try .init(gpa, limits.sampler);
-    out.upload_val = .init(0);
+    try sdl.init(.{ .video = true });
+    try sdl.vulkan.loadLibrary(null);
 
-    const semaphore_type: vk.SemaphoreTypeCreateInfo = .{ .semaphoreType = .timeline };
-    const semaphore_ci: vk.SemaphoreCreateInfo = .{ .pNext = &semaphore_type };
-    try vk.createSemaphore(ctx.device, &semaphore_ci, null, &out.upload_semaphore);
+    var instance_extensions: std.ArrayList([*:0]const u8) = .empty;
+    defer instance_extensions.deinit(gpa);
+    const sdl_extensions = try sdl.vulkan.getInstanceExtensions();
 
-    //descriptor stuff
-    const desc_bind_flags: vk.DescriptorSetLayoutBindingFlagsCreateInfo = .{
-        .pBindingFlags = &@as([3]vk.DescriptorBindingFlags, @splat(.{ .partially_bound = true, .update_unused_while_pending = false })),
-        .bindingCount = 3,
-    };
-    const bindings = [_]vk.DescriptorSetLayoutBinding{
-        .{
-            .binding = 0,
-            .descriptorCount = limits.sampled_image,
-            .descriptorType = .sampled_image,
-            .stageFlags = .{ .fragment = true, .vertex = true, .compute = true },
-        },
-        .{
-            .binding = 1,
-            .descriptorCount = limits.storage_image,
-            .descriptorType = .storage_image,
-            .stageFlags = .{ .fragment = true, .vertex = true, .compute = true },
-        },
-        .{
-            .binding = 2,
-            .descriptorCount = limits.sampler,
-            .descriptorType = .sampler,
-            .stageFlags = .{ .fragment = true, .vertex = true, .compute = true },
-        },
-    };
-    const desc_layout_ci: vk.DescriptorSetLayoutCreateInfo = .{
-        .pNext = &desc_bind_flags,
-        .pBindings = &bindings,
-        .bindingCount = 3,
-    };
-    try vk.createDescriptorSetLayout(ctx.device, &desc_layout_ci, null, &out.descriptor_layout);
+    try instance_extensions.appendSlice(gpa, sdl_extensions);
+    for (vk_extensions.instance_extensions) |ext| {
+        try instance_extensions.append(gpa, ext.ptr);
+    }
 
-    const sizes: []const vk.DescriptorPoolSize = &.{
-        .{ .descriptorCount = limits.sampled_image, .type = .sampled_image },
-        .{ .descriptorCount = limits.storage_image, .type = .storage_image },
-        .{ .descriptorCount = limits.sampler, .type = .sampler },
-    };
-    const pool_ci: vk.DescriptorPoolCreateInfo = .{
-        .maxSets = 1,
-        .poolSizeCount = @intCast(sizes.len),
-        .pPoolSizes = sizes.ptr,
-    };
-    try vk.createDescriptorPool(ctx.device, &pool_ci, null, &out.descriptor_pool);
+    var device_extensions: std.ArrayList([*:0]const u8) = .empty;
+    defer device_extensions.deinit(gpa);
+    for (vk_extensions.device_extensions) |ext| {
+        try device_extensions.append(gpa, ext.ptr);
+    }
 
-    const set_ai: vk.DescriptorSetAllocateInfo = .{
-        .descriptorPool = out.descriptor_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts = @ptrCast(&out.descriptor_layout),
-    };
-    try vk.allocateDescriptorSets(ctx.device, &set_ai, @ptrCast(&out.descriptor_set));
+    out.ctx = try .init(
+        gpa,
+        instance_extensions.items,
+        device_extensions.items,
+        sdl.vulkan.getInstanceProcAddr(),
+    );
 
-    //default sampler
-    const index = try out.samplers.push(undefined);
-    const sampler_ci: vk.SamplerCreateInfo = .{
-        .magFilter = .linear,
-        .minFilter = .linear,
-        .mipmapMode = .linear,
-        .anisotropyEnable = .True,
-        .maxAnisotropy = 8.0,
-        .borderColor = .float_transparent_black,
-        .maxLod = 11,
-    };
-    try vk.createSampler(ctx.device, &sampler_ci, null, &out.samplers.pool[index].val);
+    try sdl.vulkan.getPresentationSupport(out.ctx.instance, out.ctx.pdevice, out.ctx.qfamily);
 
-    const sampler_write: vk.WriteDescriptorSet = .{
-        .dstSet = out.descriptor_set,
-        .dstBinding = 2,
-        .descriptorType = .sampler,
-        .descriptorCount = 1,
-        .dstArrayElement = 0,
-        .pImageInfo = &.{.{ .sampler = out.samplers.pool[index].val }},
-    };
-    vk.updateDescriptorSets(ctx.device, 1, @ptrCast(&sampler_write), 0, undefined);
+    const cp_ci: vk.CommandPoolCreateInfo = .{ .flags = .{ .reset_command_buffer = true }, .queueFamilyIndex = out.ctx.qfamily };
+    try vk.createCommandPool(out.ctx.device, &cp_ci, null, &out.cp);
+    var cmdbuf_ci: vk.CommandBufferAllocateInfo = .{ .commandPool = out.cp, .commandBufferCount = max_frames, .level = .primary };
+    try vk.allocateCommandBuffers(out.ctx.device, &cmdbuf_ci, &out.cmdbuf);
+    cmdbuf_ci.commandBufferCount = 1;
+    try vk.allocateCommandBuffers(out.ctx.device, &cmdbuf_ci, @ptrCast(&out.transfer_cmdbuf));
 
-    const vertex_ci: vk.BufferCreateInfo = .{
-        .size = limits.vertex_buffer_size,
-        .usage = .{ .shader_device_address = true, .storage_buffer = true },
+    out.desc_man = try .init(out.ctx.device);
+    const layout_ci: vk.PipelineLayoutCreateInfo = .{
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = @ptrCast(&st.push_range),
+        .setLayoutCount = 1,
+        .pSetLayouts = @ptrCast(&out.desc_man.layout),
     };
-    out.vertices = try .init(ctx.vka, vertex_ci, .mapped_vram);
-    try vk.nameHandle(ctx.device, out.vertices.handle, "Vertices Buffer");
-    out.vert_offset = 0;
-    const index_ci: vk.BufferCreateInfo = .{
-        .size = limits.index_buffer_size,
-        .usage = .{ .index_buffer = true },
-    };
-    out.indices = try .init(ctx.vka, index_ci, .mapped_vram);
-    try vk.nameHandle(ctx.device, out.indices.handle, "Indices Buffer");
-    out.idx_offset = 0;
+    try vk.createPipelineLayout(out.ctx.device, &layout_ci, null, &out.graphics_layout);
+
+    out.loop = try .init(out.ctx.device);
+    out.fif_values = @splat(0);
+    out.fif_index = 0;
+    for (out.fif_semaphores, 0..) |_, i| {
+        const ci: vk.SemaphoreCreateInfo = .{};
+        try vk.createSemaphore(out.ctx.device, &ci, null, &out.fif_semaphores[i]);
+    }
+
+    out.materials = try .init(out.ctx.vka, 100, .{ .shader_device_address = true, .storage_buffer = true });
+    out.poses = try .init(out.ctx.vka, 100, .{ .shader_device_address = true, .storage_buffer = true });
+    out.scene = try .init(out.ctx.vka, 2, .{ .shader_device_address = true, .storage_buffer = true });
+
+    out.vertices = try .init(out.ctx.vka, max_vertices, .{ .shader_device_address = true, .storage_buffer = true });
+    try vk.nameHandle(out.ctx.device, out.vertices.handle(), "Vertex Buffer");
+
+    out.indices = try .init(out.ctx.vka, max_indices, .{ .index_buffer = true });
+    try vk.nameHandle(out.ctx.device, out.indices.handle(), "Indices Buffer");
+
+    out.images = try .initCapacity(gpa, max_images);
+
+    out.upload = try .init(out.ctx.device);
 
     return out;
 }
 
-pub fn deinit(manager: *Renderer, ctx: Context, gpa: std.mem.Allocator) void {
-    vk.destroySemaphore(ctx.device, manager.upload_semaphore, null);
-    vk.destroyDescriptorPool(ctx.device, manager.descriptor_pool, null);
-    vk.destroyDescriptorSetLayout(ctx.device, manager.descriptor_layout, null);
-
-    const sampler = manager.samplers.get(0);
-    vk.destroySampler(ctx.device, sampler, null);
-
-    manager.vertices.deinit(ctx.vka);
-    manager.indices.deinit(ctx.vka);
-
-    manager.images.deinit(gpa);
-    manager.sampled.deinit(gpa);
-    manager.storage.deinit(gpa);
-    manager.samplers.deinit(gpa);
-}
-
-pub const Hate = struct {
-    image: ImageHandle,
-    sampled: ViewHandle,
-};
-
-pub fn loadTextureFromFile(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocator, cp: vk.CommandPool, filename: [:0]const u8) !Hate {
+pub fn loadTextureFromFile(renderer: *Renderer, gpa: std.mem.Allocator, filename: [:0]const u8) !*ImageR {
     log.debug("attempting to open {q}", .{filename});
     var texture: *ktx.Texture = try .fromNamedFile(filename.ptr, .{ .load_image_data_bit = true });
     defer texture.destroy();
-    return loadTexture(manager, ctx, gpa, cp, texture);
+    return loadTexture(renderer, gpa, texture);
 }
 
-pub fn loadTextureFromMemory(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocator, cp: vk.CommandPool, memory: []const u8) !Hate {
+pub fn loadTextureFromMemory(renderer: *Renderer, gpa: std.mem.Allocator, memory: []const u8) !*ImageR {
     var texture: *ktx.Texture = try .fromMemory(memory, .{ .load_image_data_bit = true });
     defer texture.destroy();
-    return loadTexture(manager, ctx, gpa, cp, texture);
+    return loadTexture(renderer, gpa, texture);
 }
 
-pub fn loadTexture(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocator, cp: vk.CommandPool, texture: *ktx.Texture) !Hate {
+pub fn loadTexture(renderer: *Renderer, gpa: std.mem.Allocator, texture: *ktx.Texture) !*ImageR {
     const format: vk.Format = @enumFromInt(texture.getVkFormat());
 
     var image_ci: vk.ImageCreateInfo = .{
@@ -220,9 +189,7 @@ pub fn loadTexture(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocat
         .extent = .{ .width = texture.baseWidth, .height = texture.baseHeight, .depth = texture.baseDepth },
         .mipLevels = texture.numLevels,
         .samples = .{ .@"1" = true },
-        .tiling = .optimal,
         .usage = .{ .transfer_dst = true, .sampled = true, .transfer_src = true },
-        .initialLayout = .undefined,
     };
 
     if (texture.isCubemap) {
@@ -230,30 +197,37 @@ pub fn loadTexture(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocat
         image_ci.flags.cube_compatible = true;
     }
 
-    const image_id = try manager.allocImage(ctx, image_ci);
-    const image = manager.getImage(image_id);
-    errdefer manager.freeImage(ctx, image_id);
+    var view_ci: vk.ImageViewCreateInfo = .{
+        .format = format,
+        .subresourceRange = .{
+            .layerCount = image_ci.arrayLayers,
+            .levelCount = image_ci.mipLevels,
+            .aspectMask = .{ .color = true },
+        },
+    };
+    if (texture.isCubemap) {
+        view_ci.viewType = .cube;
+    } else view_ci.viewType = .@"2d";
+
+    const image = try renderer.createTexture(&image_ci, &view_ci);
+    errdefer renderer.destroyTexture(image);
 
     //transfer
 
-    const img_buffer = try Buffer.init(ctx.vka, .{ .size = texture.dataSize, .usage = .{ .transfer_src = true } }, .mapped_vram);
-    defer img_buffer.deinit(ctx.vka);
-    img_buffer.write(0, texture.pData[0..texture.dataSize]);
-
-    var cmd_buf: vk.CommandBuffer = undefined;
-    const cmd_buf_ai: vk.CommandBufferAllocateInfo = .{ .commandPool = cp, .commandBufferCount = 1, .level = .primary };
-    try vk.allocateCommandBuffers(ctx.device, &cmd_buf_ai, @ptrCast(&cmd_buf));
-    defer vk.freeCommandBuffers(ctx.device, cp, 1, @ptrCast(&cmd_buf));
+    const img_buffer: buffers.GpuMapped(u8) = try .init(renderer.ctx.vka, &.{ .size = texture.dataSize, .usage = .{ .transfer_src = true } });
+    defer img_buffer.deinit(renderer.ctx.vka);
+    @memcpy(img_buffer.data, texture.pData[0..texture.dataSize]);
 
     const cmd_binfo: vk.CommandBufferBeginInfo = .{ .flags = .{ .one_time_submit = true } };
-    try vk.beginCommandBuffer(cmd_buf, &cmd_binfo);
+    try vk.resetCommandBuffer(renderer.transfer_cmdbuf, .{});
+    try vk.beginCommandBuffer(renderer.transfer_cmdbuf, &cmd_binfo);
 
     const mem_barrier: vk.ImageMemoryBarrier2 = .{
         .dstStageMask = .{ .copy = true },
         .dstAccessMask = .{ .transfer_write = true },
         .oldLayout = .undefined,
         .newLayout = .transfer_dst_optimal,
-        .image = image,
+        .image = image.handle,
         .subresourceRange = .{
             .aspectMask = .{ .color = true },
             .levelCount = image_ci.mipLevels,
@@ -264,7 +238,7 @@ pub fn loadTexture(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocat
         .imageMemoryBarrierCount = 1,
         .pImageMemoryBarriers = @ptrCast(&mem_barrier),
     };
-    vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
+    vk.cmdPipelineBarrier2(renderer.transfer_cmdbuf, &barrier_texinfo);
 
     const copy_regions = try gpa.alloc(vk.BufferImageCopy, texture.numLevels * image_ci.arrayLayers);
     defer gpa.free(copy_regions);
@@ -288,7 +262,7 @@ pub fn loadTexture(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocat
             };
         }
     }
-    vk.cmdCopyBufferToImage(cmd_buf, img_buffer.handle, image, .transfer_dst_optimal, @intCast(copy_regions.len), copy_regions.ptr);
+    vk.cmdCopyBufferToImage(renderer.transfer_cmdbuf, img_buffer.handle, image.handle, .transfer_dst_optimal, @intCast(copy_regions.len), copy_regions.ptr);
 
     const barrier: vk.ImageMemoryBarrier2 = .{
         .srcStageMask = .{ .copy = true },
@@ -297,7 +271,7 @@ pub fn loadTexture(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocat
         .dstAccessMask = .{ .shader_read = true },
         .oldLayout = .transfer_dst_optimal,
         .newLayout = .read_only_optimal,
-        .image = image,
+        .image = image.handle,
         .subresourceRange = .{
             .aspectMask = .{ .color = true },
             .levelCount = image_ci.mipLevels,
@@ -305,105 +279,133 @@ pub fn loadTexture(manager: *Renderer, ctx: *const Context, gpa: std.mem.Allocat
         },
     };
     barrier_texinfo.pImageMemoryBarriers = @ptrCast(&barrier);
-    vk.cmdPipelineBarrier2(cmd_buf, &barrier_texinfo);
+    vk.cmdPipelineBarrier2(renderer.transfer_cmdbuf, &barrier_texinfo);
 
-    try vk.endCommandBuffer(cmd_buf);
+    try vk.endCommandBuffer(renderer.transfer_cmdbuf);
 
-    const fetch = manager.upload_val.fetchAdd(1, .seq_cst) + 1;
-    const upload_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = manager.upload_semaphore, .value = fetch };
+    renderer.upload.val += 1;
+    const upload_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = renderer.upload.handle, .value = renderer.upload.val };
     const sub_info: vk.SubmitInfo2 = .{
         .commandBufferInfoCount = 1,
-        .pCommandBufferInfos = &.{.{ .commandBuffer = cmd_buf }},
+        .pCommandBufferInfos = &.{.{ .commandBuffer = renderer.transfer_cmdbuf }},
         .signalSemaphoreInfoCount = 1,
         .pSignalSemaphoreInfos = &.{upload_signal},
     };
-    try vk.queueSubmit2(ctx.queue, 1, @ptrCast(&sub_info), null);
-
-    //end transfer
-
-    var view_ci: vk.ImageViewCreateInfo = .{
-        .format = format,
-        .image = image,
-        .subresourceRange = .{
-            .layerCount = image_ci.arrayLayers,
-            .levelCount = image_ci.mipLevels,
-            .aspectMask = .{ .color = true },
-        },
-    };
-    if (texture.isCubemap) {
-        view_ci.viewType = .cube;
-    } else view_ci.viewType = .@"2d";
-
-    const view_id = try manager.allocSampledImage(ctx, view_ci);
+    try vk.queueSubmit2(renderer.ctx.queue, 1, @ptrCast(&sub_info), null);
 
     const waiti: vk.SemaphoreWaitInfo = .{
         .semaphoreCount = 1,
-        .pValues = &.{fetch},
-        .pSemaphores = &.{manager.upload_semaphore},
+        .pValues = &.{renderer.upload.val},
+        .pSemaphores = &.{renderer.upload.handle},
     };
-    try vk.waitSemaphores(ctx.device, &waiti, std.math.maxInt(u64));
+    try vk.waitSemaphores(renderer.ctx.device, &waiti, std.math.maxInt(u64));
 
-    return .{
-        .image = image_id,
-        .sampled = view_id,
-    };
+    return image;
 }
 
-pub const Material = extern struct {
-    albedo: ViewHandle = .empty,
-    metallic_roughness: ViewHandle = .empty,
-    normal: ViewHandle = .empty,
-    occlusion: ViewHandle = .empty,
-    emissive: ViewHandle = .empty,
-};
-
-pub const Mesh = extern struct {
-    start_index: u32 = 0,
-    index_count: u32 = 0,
-    start_vertex: i32 = 0,
+pub const Mesh = struct {
+    pub const Offsets = extern struct {
+        start_index: u32 = 0,
+        index_count: u32 = 0,
+        start_vertex: i32 = 0,
+    };
+    offsets: Offsets = .{},
+    material: u32 = 0,
 };
 
 pub const Model = struct {
-    materials: []Material,
-    images: []ImageHandle,
+    images: []*ImageR,
     meshes: []Mesh,
 };
 
-fn getHate(
-    manager: *Renderer,
-    io: Io,
-    gpa: Allocator,
-    ctx: *const Context,
-    cp: vk.CommandPool,
-    gltf: *const Gltf,
-    dir: Io.Dir,
-    model_name: []const u8,
-    tex_type: []const u8,
-    i: usize,
-    info: anytype,
-) !Hate {
-    const path = gltf.data.images[info.index].uri.?;
-    log.debug("Loading {q}", .{path});
-    const file = try dir.readFileAlloc(io, path, gpa, .unlimited);
-    defer gpa.free(file);
-    const hate = try manager.loadTextureFromMemory(ctx, gpa, cp, file);
-    var buf: [256]u8 = undefined;
-    const name = try std.fmt.bufPrintSentinel(&buf, "{s}:{s}#{}", .{ model_name, tex_type, i }, 0);
-    try vk.nameHandle(ctx.device, manager.getImage(hate.image), name.ptr);
-    return hate;
+pub fn unloadModel(renderer: *Renderer, gpa: Allocator, model: *const Model) void {
+    for (model.images) |image| {
+        renderer.destroyTexture(image);
+    }
+    gpa.free(model.images);
+    gpa.free(model.meshes);
 }
 
-const IndexType = u32;
-pub fn loadGltf(manager: *Renderer, ctx: *const Context, io: Io, gpa: std.mem.Allocator, cp: vk.CommandPool, path: []const u8) !Model {
-    log.debug("Loading {q}", .{path});
+// fn getHate(
+//     manager: *Renderer,
+//     io: Io,
+//     gpa: Allocator,
+//     ctx: *const Context,
+//     cp: vk.CommandPool,
+//     gltf: *const Gltf,
+//     dir: Io.Dir,
+//     model_name: []const u8,
+//     tex_type: []const u8,
+//     i: usize,
+//     info: anytype,
+// ) !Hate {
+//     const path = gltf.data.images[info.index].uri.?;
+//     log.debug("Loading {q}", .{path});
+//     const file = try dir.readFileAlloc(io, path, gpa, .unlimited);
+//     defer gpa.free(file);
+//     const hate = try manager.loadTextureFromMemory(ctx, gpa, cp, file);
+//     var buf: [256]u8 = undefined;
+//     const name = try std.fmt.bufPrintSentinel(&buf, "{s}:{s}#{}", .{ model_name, tex_type, i }, 0);
+//     try vk.nameHandle(ctx.device, manager.getImage(hate.image), name.ptr);
+//     return hate;
+// }
 
+fn thing(renderer: *Renderer, io: Io, gpa: Allocator, gltf: *Gltf, dir: Io.Dir, info: anytype) !*ImageR {
+    const image_path = gltf.data.images[info.index].uri.?;
+    log.debug("Loading {q}", .{image_path});
+    const file = try dir.readFileAlloc(io, image_path, gpa, .unlimited);
+    defer gpa.free(file);
+    return renderer.loadTextureFromMemory(gpa, file);
+}
+
+fn proccessMaterial(renderer: *Renderer, io: Io, gpa: Allocator, gltf: *Gltf, dir: Io.Dir, material: Gltf.Material, images: *std.ArrayList(*ImageR)) !u32 {
+    var mat: st.Material = .{};
+
+    const albedo = material.metallic_roughness.base_color_texture;
+    if (albedo) |info| {
+        const image = try renderer.thing(io, gpa, gltf, dir, info);
+        mat.albedo = renderer.desc_man.appendSampled(renderer.ctx.device, image.view, .read_only_optimal);
+        try images.append(gpa, image);
+    }
+    const metrou = material.metallic_roughness.metallic_roughness_texture;
+    if (metrou) |info| {
+        const image = try renderer.thing(io, gpa, gltf, dir, info);
+        mat.metallic_roughness = renderer.desc_man.appendSampled(renderer.ctx.device, image.view, .read_only_optimal);
+        try images.append(gpa, image);
+    }
+    const normal = material.normal_texture;
+    if (normal) |info| {
+        const image = try renderer.thing(io, gpa, gltf, dir, info);
+        mat.normal = renderer.desc_man.appendSampled(renderer.ctx.device, image.view, .read_only_optimal);
+        try images.append(gpa, image);
+    }
+    const emissive = material.emissive_texture;
+    if (emissive) |info| {
+        const image = try renderer.thing(io, gpa, gltf, dir, info);
+        mat.emissive = renderer.desc_man.appendSampled(renderer.ctx.device, image.view, .read_only_optimal);
+        try images.append(gpa, image);
+    }
+    const ao = material.occlusion_texture;
+    if (ao) |info| {
+        const image = try renderer.thing(io, gpa, gltf, dir, info);
+        mat.occlusion = renderer.desc_man.appendSampled(renderer.ctx.device, image.view, .read_only_optimal);
+        try images.append(gpa, image);
+    }
+    const index = renderer.materials.offset;
+    renderer.materials.append(mat);
+
+    return @intCast(index);
+}
+
+pub fn loadGltf(renderer: *Renderer, io: Io, gpa: Allocator, path: []const u8) !Model {
+    log.debug("Loading {q}", .{path});
     var out: Model = undefined;
 
     var gltf = Gltf.init(gpa);
     defer gltf.deinit();
     const dirname = Io.Dir.path.dirname(path) orelse ".";
-    const model_name = Io.Dir.path.stem(path);
     const dir = try Io.Dir.openDir(.cwd(), io, dirname, .{});
+    defer dir.close(io);
     const buffer = try Io.Dir.cwd().readFileAllocOptions(io, path, gpa, .unlimited, .@"4", null);
     defer gpa.free(buffer);
     try gltf.parse(buffer);
@@ -419,45 +421,7 @@ pub fn loadGltf(manager: *Renderer, ctx: *const Context, io: Io, gpa: std.mem.Al
         gpa.free(bin);
     };
 
-    //TODO: materials should probably be a buffer on manager
-    out.materials = try gpa.alloc(Material, gltf.data.materials.len);
-    @memset(out.materials, .{});
-
-    var images: std.ArrayList(ImageHandle) = .empty;
-    for (gltf.data.materials, 0..) |material, i| {
-        log.debug("material #{} for {q}", .{ i, path });
-        const albedo = material.metallic_roughness.base_color_texture;
-        if (albedo) |info| {
-            const hate = try manager.getHate(io, gpa, ctx, cp, &gltf, dir, model_name, "albedo", i, info);
-            out.materials[i].albedo = hate.sampled;
-            try images.append(gpa, hate.image);
-        }
-        const metrou = material.metallic_roughness.metallic_roughness_texture;
-        if (metrou) |info| {
-            const hate = try manager.getHate(io, gpa, ctx, cp, &gltf, dir, model_name, "met_rough", i, info);
-            out.materials[i].metallic_roughness = hate.sampled;
-            try images.append(gpa, hate.image);
-        }
-        const normal = material.normal_texture;
-        if (normal) |info| {
-            const hate = try manager.getHate(io, gpa, ctx, cp, &gltf, dir, model_name, "normal", i, info);
-            out.materials[i].normal = hate.sampled;
-            try images.append(gpa, hate.image);
-        }
-        const emissive = material.emissive_texture;
-        if (emissive) |info| {
-            const hate = try manager.getHate(io, gpa, ctx, cp, &gltf, dir, model_name, "emissive", i, info);
-            out.materials[i].emissive = hate.sampled;
-            try images.append(gpa, hate.image);
-        }
-        const ao = material.occlusion_texture;
-        if (ao) |info| {
-            const hate = try manager.getHate(io, gpa, ctx, cp, &gltf, dir, model_name, "ao", i, info);
-            out.materials[i].occlusion = hate.sampled;
-            try images.append(gpa, hate.image);
-        }
-    }
-
+    var images: std.ArrayList(*ImageR) = .empty;
     var meshes: std.ArrayList(Mesh) = .empty;
     for (gltf.data.nodes) |node| {
         const scale: zkf.Vec3 = @bitCast(node.scale);
@@ -468,21 +432,28 @@ pub fn loadGltf(manager: *Renderer, ctx: *const Context, io: Io, gpa: std.mem.Al
         const mesh = gltf.data.meshes[mesh_idx];
 
         for (mesh.primitives) |primitive| {
-            const start_index: u32 = @intCast(manager.idx_offset / @sizeOf(IndexType));
-            const start_vertex: i32 = @intCast(manager.vert_offset / @sizeOf(gpu.Vertex));
+            const start_index: u32 = @intCast(renderer.indices.offset);
+            const start_vertex: i32 = @intCast(renderer.vertices.offset);
 
             const indices = gltf.data.accessors[primitive.indices orelse return error.NoIndices];
             const index_count: u32 = @intCast(indices.count);
 
-            try meshes.append(gpa, .{ .start_index = start_index, .start_vertex = start_vertex, .index_count = index_count });
-
             const material = gltf.data.materials[primitive.material orelse return error.NoMaterial];
-            _ = material;
+
+            const mat_id = try renderer.proccessMaterial(io, gpa, &gltf, dir, material, &images);
+
+            try meshes.append(gpa, .{
+                .offsets = .{
+                    .start_index = start_index,
+                    .start_vertex = start_vertex,
+                    .index_count = index_count,
+                },
+                .material = mat_id,
+            });
 
             var indices_it = indices.iterator(IndexType, &gltf, bins[gltf.data.buffer_views[indices.buffer_view.?].buffer]);
             while (indices_it.next()) |val| {
-                manager.indices.write(manager.idx_offset, val);
-                manager.idx_offset += @sizeOf(u32);
+                renderer.indices.appendSlice(val);
             }
 
             var positions: Gltf.Accessor = undefined;
@@ -507,14 +478,13 @@ pub fn loadGltf(manager: *Renderer, ctx: *const Context, io: Io, gpa: std.mem.Al
 
                 const pos_temp = pos.mul(scale).mul(gl_to_vulkan);
                 const norm_flipped = norm.mul(gl_to_vulkan).normalize();
-                const w: gpu.Vertex = .{
+                const w: st.Vertex = .{
                     .pos = pos_temp,
                     .norm = norm_flipped,
                     .uv = tex.*,
                 };
 
-                manager.vertices.write(manager.vert_offset, w);
-                manager.vert_offset += @sizeOf(gpu.Vertex);
+                renderer.vertices.append(w);
             }
         }
     }
@@ -530,8 +500,8 @@ pub fn loadObj(manager: *Renderer, arena: std.mem.Allocator, io: *std.Io, path: 
     var shapes_num: usize = 0;
     var shapes: ?[*]c.tinyobj_shape_t = null;
 
-    const vert_start: u32 = @intCast(manager.vert_offset);
-    const idx_start: u32 = @intCast(manager.idx_offset);
+    const vert_start: i32 = @intCast(manager.vertices.offset);
+    const idx_start: u32 = @intCast(manager.indices.offset);
 
     //not doing shi with these
     var materials_num: usize = 0;
@@ -555,35 +525,35 @@ pub fn loadObj(manager: *Renderer, arena: std.mem.Allocator, io: *std.Io, path: 
         const vn_start: usize = @intCast(face.vn_idx * 3);
         const vt_start: usize = @intCast(face.vt_idx * 2);
 
-        const vert: gpu.Vertex = .{
+        const vert: st.Vertex = .{
             .pos = .{ .x = attrib.vertices[v_start], .y = -attrib.vertices[v_start + 1], .z = attrib.vertices[v_start + 2] },
             .norm = .{ .x = attrib.normals[vn_start], .y = -attrib.normals[vn_start + 1], .z = attrib.normals[vn_start + 2] },
             .uv = .{ .x = attrib.texcoords[vt_start], .y = 1.0 - attrib.texcoords[vt_start] },
         };
-        manager.vertices.write(manager.vert_offset, vert);
-        manager.vert_offset += @sizeOf(gpu.Vertex);
-        manager.indices.write(manager.idx_offset, @as(IndexType, @intCast(i)));
-        manager.idx_offset += @sizeOf(IndexType);
+        manager.vertices.append(vert);
+        manager.indices.append(@as(IndexType, @intCast(i)));
     }
     c.tinyobj_attrib_free(&attrib);
     c.tinyobj_materials_free(materials, materials_num);
     c.tinyobj_shapes_free(shapes, shapes_num);
 
     return .{
-        .start_index = idx_start / @sizeOf(IndexType),
-        .index_count = attrib.num_faces,
-        .start_vertex = @intCast(vert_start / @sizeOf(gpu.Vertex)),
+        .offsets = .{
+            .start_index = idx_start,
+            .index_count = attrib.num_faces,
+            .start_vertex = vert_start,
+        },
     };
 }
 
-pub fn addMesh(manager: *Renderer, indices: []const IndexType, vertices: []const gpu.Vertex) Mesh {
+pub fn addMesh(manager: *Renderer, indices: []const IndexType, vertices: []const st.Vertex) Mesh {
     const mesh: Mesh = .{
-        .start_vertex = @intCast(manager.vert_offset / @sizeOf(gpu.Vertex)),
+        .start_vertex = @intCast(manager.vert_offset / @sizeOf(st.Vertex)),
         .start_index = @intCast(manager.idx_offset / @sizeOf(IndexType)),
         .index_count = @intCast(indices.len),
     };
     manager.vertices.write(manager.vert_offset, vertices);
-    manager.vert_offset += vertices.len * @sizeOf(gpu.Vertex);
+    manager.vert_offset += vertices.len * @sizeOf(st.Vertex);
     manager.indices.write(manager.idx_offset, indices);
     manager.idx_offset += indices.len * @sizeOf(IndexType);
 
@@ -628,87 +598,47 @@ pub fn transferToImage(manager: *Renderer, target: ImageHandle, buffer: vk.Buffe
     vk.cmdPipelineBarrier2(manager.command_buffer, &dep_info);
 }
 
-pub fn allocImage(manager: *Renderer, ctx: *const Context, ci: vk.ImageCreateInfo) !ImageHandle {
-    const idx = try manager.images.push(undefined);
-    const image = manager.images.getPtr(idx);
-    const ai: vma.AllocationCreateInfo = .{ .usage = .auto };
-    try vma.createImage(ctx.vka, &ci, &ai, &image.handle, &image.allocation, null);
-    return @enumFromInt(idx);
+/// sets image and format fields on image view
+pub fn createTexture(renderer: *Renderer, ci: *const vk.ImageCreateInfo, vci: *vk.ImageViewCreateInfo) !*ImageR {
+    //TODO: errdefer all the things
+    const image = try renderer.images.create(undefined);
+    try vma.createImage(renderer.ctx.vka, ci, &.{ .usage = .auto }, &image.handle, &image.allocation, null);
+
+    vci.image = image.handle;
+    vci.format = ci.format;
+    try vk.createImageView(renderer.ctx.device, vci, null, &image.view);
+
+    return image;
 }
 
-pub fn freeImage(manager: *Renderer, ctx: *const Context, handle: ImageHandle) void {
-    const idx = @intFromEnum(handle);
-    const image = manager.images.get(idx);
-    vma.destroyImage(ctx.vka, image.handle, image.allocation);
-    manager.images.pop(idx);
+pub fn destroyTexture(renderer: *Renderer, image: *ImageR) void {
+    vk.destroyImageView(renderer.ctx.device, image.view, null);
+    vma.destroyImage(renderer.ctx.vka, image.handle, image.allocation);
+    renderer.images.destroy(image);
 }
 
-pub fn getImage(manager: *Renderer, handle: ImageHandle) vk.Image {
-    return manager.images.get(@intFromEnum(handle)).handle;
-}
+pub fn createTexture2D(renderer: *Renderer, format: vk.Format, extent: vk.Extent2D, usage: vk.ImageUsageFlags, aspect_mask: vk.ImageAspectFlags) !*ImageR {
+    const ci: vk.ImageCreateInfo = .{
+        .imageType = .@"2d",
+        .samples = .{ .@"1" = true },
+        .mipLevels = 1,
+        .arrayLayers = 1,
 
-pub fn allocSampledImage(manager: *Renderer, ctx: *const Context, ci: vk.ImageViewCreateInfo) !ViewHandle {
-    const idx = try manager.sampled.push(undefined);
-    const view = manager.sampled.getPtr(idx);
-    try vk.createImageView(ctx.device, &ci, null, view);
-
-    const write: vk.WriteDescriptorSet = .{
-        .dstSet = manager.descriptor_set,
-        .dstBinding = 0,
-        .descriptorType = .sampled_image,
-        .descriptorCount = 1,
-        .dstArrayElement = idx,
-        .pImageInfo = &.{.{ .imageView = view.*, .imageLayout = .read_only_optimal }},
+        .usage = usage,
+        .format = format,
+        .extent = .{ .width = extent.width, .height = extent.height, .depth = 1 },
     };
-    vk.updateDescriptorSets(ctx.device, 1, @ptrCast(&write), 0, undefined);
 
-    return @enumFromInt(idx);
-}
-
-pub fn freeSampledImage(manager: *Renderer, ctx: *const Context, handle: ViewHandle) void {
-    if (handle == .empty) return;
-    const idx: u32 = @intFromEnum(handle);
-    const view = manager.sampled.get(idx);
-    vk.destroyImageView(ctx.device, view, null);
-    manager.sampled.pop(idx);
-}
-
-pub fn getSampledImage(manager: *Renderer, handle: ViewHandle) vk.ImageView {
-    return manager.sampled.get(@intFromEnum(handle));
-}
-
-pub fn allocStorageImage(manager: *Renderer, ctx: *const Context, ci: vk.ImageViewCreateInfo) !ViewHandle {
-    const idx = try manager.storage.push(undefined);
-    const view = manager.storage.getPtr(idx);
-    try vk.createImageView(ctx.device, &ci, null, view);
-
-    const write: vk.WriteDescriptorSet = .{
-        .dstSet = manager.descriptor_set,
-        .dstBinding = 1,
-        .descriptorType = .storage_image,
-        .descriptorCount = 1,
-        .dstArrayElement = idx,
-        .pImageInfo = &.{.{ .imageView = view.*, .imageLayout = .general }},
+    var vci: vk.ImageViewCreateInfo = .{
+        .viewType = .@"2d",
+        .subresourceRange = .{
+            .aspectMask = aspect_mask,
+            .layerCount = 1,
+            .levelCount = 1,
+        },
     };
-    vk.updateDescriptorSets(ctx.device, 1, @ptrCast(&write), 0, undefined);
 
-    return @enumFromInt(idx);
-}
-
-pub fn freeStorageImage(manager: *Renderer, ctx: *const Context, handle: ViewHandle) void {
-    const idx: u32 = @intFromEnum(handle);
-    const view = manager.storage.get(idx);
-    vk.destroyImageView(ctx.device, view, null);
-    manager.storage.pop(idx);
-}
-
-pub fn getStorageImage(manager: *Renderer, handle: ViewHandle) vk.ImageView {
-    return manager.storage.get(@intFromEnum(handle));
-}
-
-pub fn popHate(manager: *Renderer, ctx: *const Context, hate: Hate) void {
-    manager.freeImage(ctx, hate.image);
-    manager.freeSampledImage(ctx, hate.sampled);
+    return renderer.createTexture(&ci, &vci);
 }
 
 pub fn loadLevel() void {}

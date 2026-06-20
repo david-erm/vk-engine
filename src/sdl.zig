@@ -536,6 +536,8 @@ pub const vulkan = struct {
             return error.loadLibrary;
         }
     }
+    pub const unloadLibrary = @extern(*const fn () callconv(.c) void, .{ .name = "SDL_Vulkan_UnloadLibrary" });
+
     const raw_getPresentationSupport = @extern(*const fn (instance: vk.Instance, pdevice: vk.PhysicalDevice, qfamilyindex: u32) callconv(.c) bool, .{ .name = "SDL_Vulkan_GetPresentationSupport" });
     pub fn getPresentationSupport(instance: vk.Instance, pdevice: vk.PhysicalDevice, qfamilyindex: u32) error{getPresentationSupport}!void {
         const result = raw_getPresentationSupport(instance, pdevice, qfamilyindex);

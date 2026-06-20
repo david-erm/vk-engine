@@ -44,4 +44,5 @@ public struct Push {
     public Pose* poses;
     public Material* materials;
     public Vertex* vertices;
+    public uint64_t fif_index;
 };

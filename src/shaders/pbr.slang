@@ -14,16 +14,17 @@ struct VSOut {
 [shader("vertex")]
 VSOut main(uniform Push push, uint vid : SV_VulkanVertexID, uint iid : SV_VulkanInstanceID) {
     VSOut output;
+    Scene scene= push.scene[push.fif_index];
     Vertex v = push.vertices[vid];
 
     Pose pose = push.poses[iid];
-    Pose cam = push.scene.cam;
+    Pose cam = scene.cam;
 
     float3 frag_pos = cam.toFrame(pose.transform(v.pos));
     output.Normal = rotate(v.norm, qmul(conj(cam.rot), pose.rot));
-    output.LightVec = rotate(push.scene.lightPos.xyz - cam.pos.xyz, conj(cam.rot)) - frag_pos;
+    output.LightVec = rotate(scene.lightPos.xyz - cam.pos.xyz, conj(cam.rot)) - frag_pos;
 
-    output.Pos = mul(push.scene.projection, float4(frag_pos, 1.0));
+    output.Pos = mul(scene.projection, float4(frag_pos, 1.0));
     output.ViewVec  = -frag_pos;
 
     output.mat = push.materials[iid];

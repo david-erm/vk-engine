@@ -19,7 +19,8 @@ VSOutput main(uniform Push push, uint iidx : SV_VulkanInstanceID, uint vid : SV_
 
     output.local_pos = rotate(pos, cam.rot);
     output.Pos = float4(pos, 1.0).xyww;
-    output.index = push.materials[iidx].albedo;
+    //FIX:
+    output.index = iidx;
     
     return output;
 }

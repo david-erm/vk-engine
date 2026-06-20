@@ -1,5 +1,3 @@
-import desc;
-
 struct Push {
     float2 cursorpos;
     uint image_index;

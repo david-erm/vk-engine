@@ -5,15 +5,15 @@ const vk = @import("vk");
 
 const Vec3 = math.Vec3;
 const Vec2 = math.Vec2;
-const Pose = math.Pose;
+pub const Pose = math.Pose;
 const Quat = math.Quat;
 
 pub const Material = extern struct {
-    albedo: u32,
-    metallic_roughness: u32,
-    normal: u32,
-    occlusion: u32,
-    emisisve: u32,
+    albedo: u32 = 0,
+    metallic_roughness: u32 = 0,
+    normal: u32 = 0,
+    occlusion: u32 = 0,
+    emissive: u32 = 0,
 };
 
 pub const Vertex = extern struct {
@@ -32,8 +32,15 @@ pub const Scene = extern struct {
 };
 
 pub const Push = extern struct {
-    scene: vk.DeviceAdress,
-    poses: vk.DeviceAdress,
-    materials: vk.DeviceAdress,
-    vertices: vk.DeviceAdress,
+    scene: vk.DeviceAddress,
+    poses: vk.DeviceAddress,
+    materials: vk.DeviceAddress,
+    vertices: vk.DeviceAddress,
+    fif_index: u64,
+};
+
+pub const push_range: vk.PushConstantRange = .{
+    .offset = 0,
+    .size = @sizeOf(Push),
+    .stageFlags = .{ .vertex = true },
 };

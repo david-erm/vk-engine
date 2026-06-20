@@ -27,62 +27,6 @@ pub fn makeError(err: type, ret: anytype) err!void {
     }
 }
 
-pub fn ObjectPool(T: type) type {
-    return struct {
-        const Error = error{OutOfMemory};
-        const list_end = std.math.maxInt(u32);
-        pub const Element = union {
-            next: u32,
-            val: T,
-        };
-        head: u32,
-        pool: []Element,
-
-        pub fn init(gpa: std.mem.Allocator, size: usize) !@This() {
-            const pool: []Element = try gpa.alloc(Element, size);
-
-            for (pool[0 .. size - 1], 0..) |*elem, i| {
-                elem.* = .{ .next = @intCast(i + 1) };
-            }
-
-            pool[size - 1] = .{ .next = list_end };
-
-            return .{
-                .head = 0,
-                .pool = pool,
-            };
-        }
-
-        pub fn push(pool: *@This(), val: T) Error!u32 {
-            if (pool.head != list_end) {
-                const idx = pool.head;
-                pool.head = pool.pool[idx].next;
-                pool.pool[idx] = .{ .val = val };
-                return idx;
-            } else {
-                return Error.OutOfMemory;
-            }
-        }
-
-        pub fn get(pool: *@This(), idx: u32) T {
-            return pool.pool[idx].val;
-        }
-
-        pub fn getPtr(pool: *@This(), idx: u32) *T {
-            return &pool.pool[idx].val;
-        }
-
-        pub fn pop(pool: *@This(), idx: u32) void {
-            pool.pool[idx] = .{ .next = pool.head };
-            pool.head = idx;
-        }
-
-        pub fn deinit(object_pool: *@This(), gpa: std.mem.Allocator) void {
-            gpa.free(object_pool.pool);
-        }
-    };
-}
-
 pub const Camera = struct {
     const pitch_limit = std.math.pi / 2.0 - 0.1;
 

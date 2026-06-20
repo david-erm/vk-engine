@@ -20,7 +20,7 @@ pub const Context = struct {
         vk.destroyInstance(ctx.instance, null);
     }
 
-    pub fn init(arena: std.mem.Allocator, instance_extensions: []const [*:0]const u8, device_extensions: []const [*:0]const u8, proc_addr: vk.pfn.vkGetInstanceProcAddr) !Context {
+    pub fn init(gpa: std.mem.Allocator, instance_extensions: []const [*:0]const u8, device_extensions: []const [*:0]const u8, proc_addr: vk.pfn.vkGetInstanceProcAddr) !Context {
         var ctx: Context = undefined;
         vk.load(proc_addr);
 
@@ -41,7 +41,8 @@ pub const Context = struct {
 
         var device_count: u32 = 0;
         try vk.enumeratePhysicalDevices(ctx.instance, &device_count, null);
-        const devices = try arena.alloc(vk.PhysicalDevice, device_count);
+        const devices = try gpa.alloc(vk.PhysicalDevice, device_count);
+        defer gpa.free(devices);
         try vk.enumeratePhysicalDevices(ctx.instance, &device_count, devices.ptr);
         const device_index: u32 = 0;
         ctx.pdevice = devices[device_index];
@@ -60,12 +61,10 @@ pub const Context = struct {
         var queue_count: u32 = 0;
         ctx.qfamily = 0;
         vk.getPhysicalDeviceQueueFamilyProperties(ctx.pdevice, &queue_count, null);
-        const queue_families = try arena.alloc(vk.QueueFamilyProperties, queue_count);
+        const queue_families = try gpa.alloc(vk.QueueFamilyProperties, queue_count);
+        defer gpa.free(queue_families);
         vk.getPhysicalDeviceQueueFamilyProperties(ctx.pdevice, &queue_count, queue_families.ptr);
         while (!(queue_families[ctx.qfamily].queueFlags.graphics and queue_families[ctx.qfamily].queueFlags.compute)) : (ctx.qfamily += 1) {}
-
-        //TODO: have this check elsewhere
-        // try sdl.vulkan.getPresentationSupport(ctx.instance, ctx.pdevice, ctx.qfamily);
 
         const qfpriorities: [1]f32 = .{1.0};
         const queueCI: vk.DeviceQueueCreateInfo = .{
@@ -82,7 +81,7 @@ pub const Context = struct {
             .descriptorBindingPartiallyBound = .True,
             .scalarBlockLayout = .True,
             //turned off, was used at some point
-            .descriptorBindingUpdateUnusedWhilePending = .False,
+            .descriptorBindingUpdateUnusedWhilePending = .True,
         };
         const enableVK13Features: vk.PhysicalDeviceVulkan13Features = .{
             .pNext = &enableVK12Features,
@@ -91,6 +90,7 @@ pub const Context = struct {
         };
         const enableVKFeatures: vk.PhysicalDeviceFeatures = .{
             .samplerAnisotropy = .True,
+            .shaderInt64 = .True,
         };
         try vk.createDevice(ctx.pdevice, &.{
             .pNext = &enableVK13Features,
