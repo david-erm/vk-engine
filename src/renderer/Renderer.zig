@@ -31,9 +31,13 @@ const Renderer = @This();
 
 // LIMITS
 pub const max_frames = 2;
-const max_images = 1000;
-const max_vertices = 3_000_000;
-const max_indices = 1_000_000;
+pub const max_images = 1000;
+pub const max_vertices = 3_000_000;
+pub const max_indices = 1_000_000;
+//descriptors
+pub const max_sampled = 1000;
+pub const max_storage = 100;
+pub const max_sampler = 1;
 
 pub const ImageHandle = enum(u32) {
     empty = std.math.maxInt(u32),
@@ -79,6 +83,9 @@ pub fn deinit(renderer: *Renderer, gpa: std.mem.Allocator) void {
     renderer.poses.deinit(renderer.ctx.vka);
     renderer.scene.deinit(renderer.ctx.vka);
 
+    for (renderer.fif_semaphores) |smp| {
+        vk.destroySemaphore(renderer.ctx.device, smp, null);
+    }
     renderer.loop.deinit(renderer.ctx.device);
     renderer.upload.deinit(renderer.ctx.device);
 

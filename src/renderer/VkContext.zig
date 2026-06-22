@@ -77,10 +77,9 @@ pub const Context = struct {
             .runtimeDescriptorArray = .True,
             .bufferDeviceAddress = .True,
             .timelineSemaphore = .True,
+            .scalarBlockLayout = .True,
             .shaderSampledImageArrayNonUniformIndexing = .True,
             .descriptorBindingPartiallyBound = .True,
-            .scalarBlockLayout = .True,
-            //turned off, was used at some point
             .descriptorBindingUpdateUnusedWhilePending = .True,
         };
         const enableVK13Features: vk.PhysicalDeviceVulkan13Features = .{

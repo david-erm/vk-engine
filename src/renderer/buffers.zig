@@ -3,6 +3,8 @@ const std = @import("std");
 const vk = @import("vk");
 const vma = @import("../vma.zig");
 
+const root = @import("Renderer.zig");
+
 pub const TimelineSemaphore = struct {
     const tci: vk.SemaphoreTypeCreateInfo = .{ .semaphoreType = .timeline };
     const ci: vk.SemaphoreCreateInfo = .{ .pNext = &tci };
@@ -96,9 +98,9 @@ pub const DescriptorManager = struct {
         .pBindingFlags = &@as([3]vk.DescriptorBindingFlags, @splat(flags)),
         .bindingCount = 3,
     };
-    const max_sampled = 1000;
-    const max_storage = 100;
-    const max_sampler = 1;
+    const max_sampled = root.max_sampled;
+    const max_storage = root.max_storage;
+    const max_sampler = root.max_sampler;
 
     set: vk.DescriptorSet,
     layout: vk.DescriptorSetLayout,

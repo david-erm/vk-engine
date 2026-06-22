@@ -24,7 +24,7 @@ const Vec2 = math.Vec2;
 const Pose = zkf.Pose;
 const Camera = zkf.Camera;
 
-//build
+///build
 const vk_extensions = @import("vk_extensions");
 
 pub fn getShaderModule(device: vk.Device, shader: anytype) !vk.ShaderModule {
@@ -74,6 +74,10 @@ pub fn main(init: std.process.Init) !void {
     try vk.createSampler(renderer.ctx.device, &sampler_ci, null, &sampler);
     defer vk.destroySampler(renderer.ctx.device, sampler, null);
 
+    loop: while (true) {
+        break :loop;
+    }
+
     const sampler_write: vk.WriteDescriptorSet = .{
         .dstSet = renderer.desc_man.set,
         .dstBinding = 2,
@@ -112,6 +116,14 @@ pub fn main(init: std.process.Init) !void {
         .{ .color = true },
     );
     defer renderer.destroyTexture(offscreen_render);
+
+    var triangle_id = try renderer.createTexture2D(
+        .r32_uint,
+        window_extent,
+        .{ .color_attachment = true },
+        .{ .color = true },
+    );
+    defer renderer.destroyTexture(triangle_id);
 
     var depth_buffer = try renderer.createTexture2D(
         .d32_sfloat,
@@ -455,6 +467,7 @@ pub fn main(init: std.process.Init) !void {
         try vk.createGraphicsPipelines(renderer.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&text_pipeline));
     }
 
+    //TODO: color attachmnt + pipeline creating + starting barriers all should be created from the same function call
     var pbr_pipeline: vk.Pipeline = undefined;
     defer vk.destroyPipeline(renderer.ctx.device, pbr_pipeline, null);
     {
@@ -465,11 +478,14 @@ pub fn main(init: std.process.Init) !void {
             .{ .module = pbr_module, .pName = "main", .stage = .{ .fragment = true } },
         };
         const render_ci: vk.PipelineRenderingCreateInfo = .{
-            .colorAttachmentCount = 1,
-            .pColorAttachmentFormats = &.{.r16g16b16a16_unorm},
+            .colorAttachmentCount = 2,
+            .pColorAttachmentFormats = &.{ .r16g16b16a16_unorm, .r32_uint },
             .depthAttachmentFormat = .d32_sfloat,
         };
-        const blend_attachment: vk.PipelineColorBlendAttachmentState = .{ .colorWriteMask = @bitCast(@as(u32, 0xF)) };
+        const blend_attachments = [_]vk.PipelineColorBlendAttachmentState{
+            .{ .colorWriteMask = @bitCast(@as(u32, 0xF)) },
+            .{ .colorWriteMask = @bitCast(@as(u32, 0xF)) },
+        };
         const ci: vk.GraphicsPipelineCreateInfo = .{
             .pNext = &render_ci,
             .stageCount = stages.len,
@@ -480,7 +496,7 @@ pub fn main(init: std.process.Init) !void {
             .pRasterizationState = &.{ .lineWidth = 1.0, .polygonMode = .fill, .cullMode = .{ .back = true } },
             .pMultisampleState = &.{ .rasterizationSamples = .{ .@"1" = true } },
             .pDepthStencilState = &.{ .depthTestEnable = .True, .depthCompareOp = .less_or_equal, .depthWriteEnable = .True },
-            .pColorBlendState = &.{ .attachmentCount = 1, .pAttachments = @ptrCast(&blend_attachment) },
+            .pColorBlendState = &.{ .attachmentCount = @intCast(blend_attachments.len), .pAttachments = &blend_attachments },
             .pDynamicState = &.{ .dynamicStateCount = 2, .pDynamicStates = &.{ .viewport, .scissor } },
             .layout = renderer.graphics_layout,
         };
@@ -610,6 +626,7 @@ pub fn main(init: std.process.Init) !void {
             renderer.scene.reset();
             renderer.poses.reset();
         }
+
         renderer.scene.append(.{
             .projection = .perspective(cam.fov, aspect, 0.1, 32.0),
             .ortho = .ortho(0.0, @floatFromInt(window_extent.width), 0.0, @floatFromInt(window_extent.height)),
@@ -641,11 +658,6 @@ pub fn main(init: std.process.Init) !void {
         // poses_buffer[fif_index].write(0, poses);
         // poses_buffer[fif_index].write(4 * @sizeOf(Pose), .{ .pos = .{ .z = -2 } });
 
-        // @memcpy(mats[4..].ptr, helm.materials);
-        // const offset = 4 + helm.materials.len;
-        // @memcpy(mats[offset..].ptr, sponza.materials);
-        // mat_buf[fif_index].write(0, mats);
-
         const cb: vk.CommandBuffer = renderer.cmdbuf[renderer.fif_index];
         try vk.resetCommandBuffer(cb, .{});
 
@@ -653,15 +665,25 @@ pub fn main(init: std.process.Init) !void {
             try vk.beginCommandBuffer(cb, &.{ .flags = .{ .one_time_submit = true } });
 
             // generate both barriers and rendering attachment info with some renderer call?
-            const output_barriers: [3]vk.ImageMemoryBarrier2 = .{
+            const output_barriers = [_]vk.ImageMemoryBarrier2{
                 .{
                     .srcStageMask = .{ .compute_shader = true, .color_attachment_output = true },
                     .srcAccessMask = .{},
                     .dstStageMask = .{ .color_attachment_output = true },
-                    .dstAccessMask = .{ .color_attachment_read = true, .color_attachment_write = true },
+                    .dstAccessMask = .{ .color_attachment_write = true },
                     .oldLayout = .undefined,
                     .newLayout = .attachment_optimal,
                     .image = offscreen_render.handle,
+                    .subresourceRange = .{ .aspectMask = .{ .color = true }, .levelCount = 1, .layerCount = 1 },
+                },
+                .{
+                    .srcStageMask = .{ .color_attachment_output = true },
+                    .srcAccessMask = .{},
+                    .dstStageMask = .{ .color_attachment_output = true },
+                    .dstAccessMask = .{ .color_attachment_write = true },
+                    .oldLayout = .undefined,
+                    .newLayout = .attachment_optimal,
+                    .image = triangle_id.handle,
                     .subresourceRange = .{ .aspectMask = .{ .color = true }, .levelCount = 1, .layerCount = 1 },
                 },
                 .{
@@ -685,14 +707,23 @@ pub fn main(init: std.process.Init) !void {
                     .subresourceRange = .{ .aspectMask = .{ .depth = true }, .levelCount = 1, .layerCount = 1 },
                 },
             };
-            vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 3, .pImageMemoryBarriers = &output_barriers });
+            vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = @intCast(output_barriers.len), .pImageMemoryBarriers = &output_barriers });
 
-            const color_attach_info: vk.RenderingAttachmentInfo = .{
-                .imageView = offscreen_render.view,
-                .imageLayout = .attachment_optimal,
-                .loadOp = .clear,
-                .storeOp = .store,
-                .clearValue = .{ .color = .{ .float32 = .{ 0.0, 0.0, 0.0, 1.0 } } },
+            const color_attach_infos = [_]vk.RenderingAttachmentInfo{
+                .{
+                    .imageView = offscreen_render.view,
+                    .imageLayout = .attachment_optimal,
+                    .loadOp = .clear,
+                    .storeOp = .store,
+                    .clearValue = .{ .color = .{ .float32 = .{ 0.0, 0.0, 0.0, 1.0 } } },
+                },
+                .{
+                    .imageView = triangle_id.view,
+                    .imageLayout = .attachment_optimal,
+                    .loadOp = .clear,
+                    .storeOp = .store,
+                    .clearValue = .{ .color = .{ .uint32 = @splat(0.0) } },
+                },
             };
             const depth_attach_info: vk.RenderingAttachmentInfo = .{
                 .imageView = depth_buffer.view,
@@ -705,8 +736,8 @@ pub fn main(init: std.process.Init) !void {
             const rendering_info: vk.RenderingInfo = .{
                 .renderArea = .{ .extent = window_extent },
                 .layerCount = 1,
-                .colorAttachmentCount = 1,
-                .pColorAttachments = @ptrCast(&color_attach_info),
+                .colorAttachmentCount = @intCast(color_attach_infos.len),
+                .pColorAttachments = &color_attach_infos,
                 .pDepthAttachment = &depth_attach_info,
             };
 
@@ -749,13 +780,15 @@ pub fn main(init: std.process.Init) !void {
 
                 vk.cmdEndDebugUtilsLabelEXT(cb);
 
-                vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Skybox" });
+                // vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Skybox" });
 
-                vk.cmdBindPipeline(cb, .graphics, skybox_pipeline);
-                vk.cmdDrawIndexed(cb, cube.offsets.index_count, 1, cube.offsets.start_index, cube.offsets.start_vertex, skybox_id);
+                // vk.cmdBindPipeline(cb, .graphics, skybox_pipeline);
+                // vk.cmdDrawIndexed(cb, cube.offsets.index_count, 1, cube.offsets.start_index, cube.offsets.start_vertex, skybox_id);
 
-                vk.cmdEndDebugUtilsLabelEXT(cb);
+                // vk.cmdEndDebugUtilsLabelEXT(cb);
 
+                _ = cube;
+                _ = skybox_id;
                 vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Text" });
 
                 //FIX:
@@ -895,6 +928,9 @@ pub fn main(init: std.process.Init) !void {
 
             renderer.destroyTexture(offscreen_render);
             offscreen_render = try renderer.createTexture2D(.r16g16b16a16_unorm, window_extent, .{ .color_attachment = true, .transfer_src = true }, .{ .color = true });
+
+            renderer.destroyTexture(triangle_id);
+            triangle_id = try renderer.createTexture2D(.r32_uint, window_extent, .{ .color_attachment = true }, .{ .color = true });
 
             renderer.destroyTexture(depth_buffer);
             depth_buffer = try renderer.createTexture2D(.d32_sfloat, window_extent, .{ .depth_stencil_attachment = true }, .{ .depth = true });
