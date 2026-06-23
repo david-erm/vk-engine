@@ -207,7 +207,7 @@ pub const DescriptorManager = struct {
     pub fn appendSampler(ring: *DescriptorManager, device: vk.Device, sampler: vk.Sampler) u32 {
         const write: vk.WriteDescriptorSet = .{
             .dstSet = ring.set,
-            .dstBinding = 0,
+            .dstBinding = 2,
             .descriptorType = .sampler,
             .dstArrayElement = ring.sampler,
             .descriptorCount = 1,

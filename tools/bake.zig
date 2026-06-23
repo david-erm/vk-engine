@@ -259,6 +259,9 @@ pub fn makeKtx(
     };
 
     var current_ptr = mip_buffer.ptr;
+    var last_ptr = data_ptr;
+    var last_width: i32 = width;
+    var last_height: i32 = height;
     for (0..max_mip) |i| {
         if (i == 0) {
             var bcnsize: u32 = undefined;
@@ -273,14 +276,16 @@ pub fn makeKtx(
             continue;
         }
         const mip: u5 = @intCast(i);
+        const current_width = (width >> mip);
+        const current_height = (height >> mip);
         _ = c.stbir_resize_uint8_linear(
-            data_ptr,
-            width,
-            height,
+            last_ptr,
+            last_width,
+            last_height,
             0,
             current_ptr,
-            width >> mip,
-            height >> mip,
+            current_width,
+            current_height,
             0,
             c.STBIR_RGBA,
         );
@@ -288,13 +293,16 @@ pub fn makeKtx(
         var bcnsize: u32 = undefined;
         var handle: bcn.Handle = undefined;
         var out: [*]const u8 = undefined;
-        if (!bcn.bcn_encode(&params, @intCast(width >> mip), @intCast(height >> mip), current_ptr, &bcnsize, &out, &handle)) {
+        if (!bcn.bcn_encode(&params, @intCast(current_width), @intCast(current_height), current_ptr, &bcnsize, &out, &handle)) {
             return error.Encode;
         }
         defer bcn.bcn_free(handle);
         try texture.setImageFromMemory(mip, 0, 0, out[0..bcnsize]);
 
-        const size: u64 = @intCast((width >> mip) * (height >> mip) * channel_n);
+        const size: u64 = @intCast((current_width) * (current_height) * 4);
+        last_ptr = current_ptr;
+        last_width = current_width;
+        last_height = current_height;
         current_ptr += size;
     }
 

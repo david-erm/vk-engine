@@ -9,7 +9,6 @@ struct VSOut {
   float3 LightVec;
   float3 ViewVec;
   nointerpolation Material mat;
-  nointerpolation uint32_t triangle_id;
 };
 
 [shader("vertex")]
@@ -33,14 +32,11 @@ VSOut main(uniform Push push, uint32_t vid: SV_VulkanVertexID,
   output.mat = push.materials[iid];
   output.UV = v.uv;
 
-  output.triangle_id = ((vid / 3) << 8) | (iid);
-
   return output;
 };
 
 struct FSOut {
   float4 color : SV_Target0;
-  uint32_t visbuffer : SV_Target1;
 };
 
 static const float3 light_color = float3(30.4, 31.0, 30.3);
@@ -95,6 +91,5 @@ FSOut main(VSOut input) {
 
   return {
     color,
-    input.triangle_id,
   };
 }

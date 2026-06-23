@@ -72,6 +72,7 @@ fif_semaphores: [max_frames]vk.Semaphore,
 fif_index: u64,
 
 materials: buffers.GpuMappedPush(st.Material),
+offsets: buffers.GpuMappedPush(st.Offsets),
 poses: buffers.GpuMappedPush(st.Pose),
 scene: buffers.GpuMappedPush(st.Scene),
 
@@ -80,6 +81,7 @@ upload: buffers.TimelineSemaphore,
 
 pub fn deinit(renderer: *Renderer, gpa: std.mem.Allocator) void {
     renderer.materials.deinit(renderer.ctx.vka);
+    renderer.offsets.deinit(renderer.ctx.vka);
     renderer.poses.deinit(renderer.ctx.vka);
     renderer.scene.deinit(renderer.ctx.vka);
 
@@ -157,13 +159,14 @@ pub fn init(gpa: std.mem.Allocator) !Renderer {
     }
 
     out.materials = try .init(out.ctx.vka, 100, .{ .shader_device_address = true, .storage_buffer = true });
+    out.offsets = try .init(out.ctx.vka, 100, .{ .shader_device_address = true, .storage_buffer = true });
     out.poses = try .init(out.ctx.vka, 100, .{ .shader_device_address = true, .storage_buffer = true });
     out.scene = try .init(out.ctx.vka, 2, .{ .shader_device_address = true, .storage_buffer = true });
 
     out.vertices = try .init(out.ctx.vka, max_vertices, .{ .shader_device_address = true, .storage_buffer = true });
     try vk.nameHandle(out.ctx.device, out.vertices.handle(), "Vertex Buffer");
 
-    out.indices = try .init(out.ctx.vka, max_indices, .{ .index_buffer = true });
+    out.indices = try .init(out.ctx.vka, max_indices, .{ .index_buffer = true, .shader_device_address = true });
     try vk.nameHandle(out.ctx.device, out.indices.handle(), "Indices Buffer");
 
     out.images = try .initCapacity(gpa, max_images);
@@ -311,12 +314,7 @@ pub fn loadTexture(renderer: *Renderer, gpa: std.mem.Allocator, texture: *ktx.Te
 }
 
 pub const Mesh = struct {
-    pub const Offsets = extern struct {
-        start_index: u32 = 0,
-        index_count: u32 = 0,
-        start_vertex: i32 = 0,
-    };
-    offsets: Offsets = .{},
+    offsets: st.Offsets = .{},
     material: u32 = 0,
 };
 

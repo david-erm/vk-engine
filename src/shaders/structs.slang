@@ -29,8 +29,14 @@ public struct Scene {
     public float4x4 ortho;
     public Pose cam; 
     public float4 lightPos;
+    public float2 dimensions;
     public uint32_t selected;
-    // public float delta_time;
+};
+
+public struct Offsets {
+    public uint32_t start_index;  
+    public uint32_t index_count;
+    public uint32_t start_vertex;
 };
 
 public struct Vertex {
@@ -39,10 +45,15 @@ public struct Vertex {
     public float2 uv;
 };
 
+
 public struct Push {
     public Scene* scene; 
     public Pose* poses;
     public Material* materials;
     public Vertex* vertices;
-    public uint64_t fif_index;
+    public uint32_t3* indices;
+    public Offsets* offsets;
+    public void* user_buffer;
+    public uint32_t fif_index;
+    private uint32_t pad;
 };

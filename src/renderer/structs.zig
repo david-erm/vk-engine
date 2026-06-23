@@ -16,6 +16,12 @@ pub const Material = extern struct {
     emissive: u32 = 0,
 };
 
+pub const Offsets = extern struct {
+    start_index: u32 = 0,
+    index_count: u32 = 0,
+    start_vertex: i32 = 0,
+};
+
 pub const Vertex = extern struct {
     pos: Vec3,
     norm: Vec3,
@@ -28,6 +34,7 @@ pub const Scene = extern struct {
     ortho: math.Mat4 = .zero,
     cam: Pose = .{},
     light_pos: math.Vec4 = .{ .x = 0.0, .y = -10.0, .z = 0.0, .w = 0.0 },
+    dimensions: Vec2,
     selected: u32 = 1,
 };
 
@@ -36,11 +43,14 @@ pub const Push = extern struct {
     poses: vk.DeviceAddress,
     materials: vk.DeviceAddress,
     vertices: vk.DeviceAddress,
-    fif_index: u64,
+    indices: vk.DeviceAddress,
+    offsets: vk.DeviceAddress,
+    user_buffer: vk.DeviceAddress,
+    fif_index: u32,
 };
 
 pub const push_range: vk.PushConstantRange = .{
     .offset = 0,
     .size = @sizeOf(Push),
-    .stageFlags = .{ .vertex = true },
+    .stageFlags = .{ .vertex = true, .compute = true },
 };

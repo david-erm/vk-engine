@@ -49,15 +49,14 @@ var space_advance: f32 = undefined;
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
-    var io = init.io;
-    const a_static = init.arena.allocator();
+    const io = init.io;
+    // const a_static = init.arena.allocator();
     var arena_startup = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     // const a_startup = arena_startup.allocator();
     // var arena_frame = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     // const a_frame = arena_frame.allocator();
 
     var cam: Camera = .{ .pose = .{ .pos = .{ .z = 6.0 }, .extra = 0 } };
-
     var renderer: Renderer = try .init(gpa);
     defer renderer.deinit(gpa);
 
@@ -74,10 +73,6 @@ pub fn main(init: std.process.Init) !void {
     try vk.createSampler(renderer.ctx.device, &sampler_ci, null, &sampler);
     defer vk.destroySampler(renderer.ctx.device, sampler, null);
 
-    loop: while (true) {
-        break :loop;
-    }
-
     const sampler_write: vk.WriteDescriptorSet = .{
         .dstSet = renderer.desc_man.set,
         .dstBinding = 2,
@@ -90,7 +85,7 @@ pub fn main(init: std.process.Init) !void {
     };
     vk.updateDescriptorSets(renderer.ctx.device, 1, @ptrCast(&sampler_write), 0, undefined);
 
-    var window_extent: vk.Extent2D = .{ .width = 1920, .height = 1080 };
+    var window_extent: vk.Extent2D = .{ .width = 2560, .height = 1440 };
     const window = try sdl.createWindow("hello", @intCast(window_extent.width), @intCast(window_extent.height), .{
         .vulkan = true,
         .resizable = true,
@@ -112,18 +107,28 @@ pub fn main(init: std.process.Init) !void {
     var offscreen_render = try renderer.createTexture2D(
         .r16g16b16a16_unorm,
         window_extent,
-        .{ .transfer_src = true, .color_attachment = true },
+        .{ .transfer_src = true, .storage = true },
         .{ .color = true },
     );
     defer renderer.destroyTexture(offscreen_render);
 
-    var triangle_id = try renderer.createTexture2D(
+    var visbuffer = try renderer.createTexture2D(
         .r32_uint,
         window_extent,
-        .{ .color_attachment = true },
+        .{ .color_attachment = true, .sampled = true },
         .{ .color = true },
     );
-    defer renderer.destroyTexture(triangle_id);
+    defer renderer.destroyTexture(visbuffer);
+    try vk.nameHandle(renderer.ctx.device, visbuffer.handle, "Visbuffer");
+    var visbuffer_idx = renderer.desc_man.appendSampled(renderer.ctx.device, visbuffer.view, .read_only_optimal);
+    var offscreenrender_idx = renderer.desc_man.appendStorage(renderer.ctx.device, offscreen_render.view, .general);
+
+    var visbuffer_data: bufs.GpuMappedPush(math.UVec2) = try .init(
+        renderer.ctx.vka,
+        Renderer.max_frames,
+        .{ .storage_buffer = true, .shader_device_address = true },
+    );
+    defer visbuffer_data.deinit(renderer.ctx.vka);
 
     var depth_buffer = try renderer.createTexture2D(
         .d32_sfloat,
@@ -134,13 +139,13 @@ pub fn main(init: std.process.Init) !void {
     defer renderer.destroyTexture(depth_buffer);
 
     // const suzanne_pulled = try renderer.loadObj(a_static, &io, "assets/suzanne.obj");
-    const cube = try renderer.loadObj(a_static, &io, "assets/cube.obj");
+    // const cube = try renderer.loadObj(a_static, &io, "assets/cube.obj");
     // const plane = asset.addMesh(&quad_indices, @ptrCast(&plane_vertices));
 
-    const helm = try renderer.loadGltf(io, gpa, "zig-out/assets/DamagedHelmet/DamagedHelmet.gltf");
+    const helm = try renderer.loadGltf(io, gpa, "assets/DamagedHelmet/DamagedHelmet.gltf");
     defer renderer.unloadModel(gpa, &helm);
 
-    const sponza = try renderer.loadGltf(io, gpa, "zig-out/assets/Sponza/Sponza.gltf");
+    const sponza = try renderer.loadGltf(io, gpa, "assets/Sponza/Sponza.gltf");
     defer renderer.unloadModel(gpa, &sponza);
 
     //FIX: text
@@ -164,9 +169,9 @@ pub fn main(init: std.process.Init) !void {
     //     handles[i] = try renderer.loadTextureFromFile(&ctx, gpa, commandPool, filename);
     // }
 
-    const skybox = try renderer.loadTextureFromFile(gpa, "assets/skybox.ktx2");
-    defer renderer.destroyTexture(skybox);
-    const skybox_id = renderer.desc_man.appendSampled(renderer.ctx.device, skybox.view, .read_only_optimal);
+    // const skybox = try renderer.loadTextureFromFile(gpa, "assets/skybox.ktx2");
+    // defer renderer.destroyTexture(skybox);
+    // const skybox_id = renderer.desc_man.appendSampled(renderer.ctx.device, skybox.view, .read_only_optimal);
 
     //FIX:
     // //fonts
@@ -467,6 +472,41 @@ pub fn main(init: std.process.Init) !void {
         try vk.createGraphicsPipelines(renderer.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&text_pipeline));
     }
 
+    var visbuffer_pipeline: vk.Pipeline = undefined;
+    defer vk.destroyPipeline(renderer.ctx.device, visbuffer_pipeline, null);
+    {
+        const visbuffer_module = try getShaderModule(renderer.ctx.device, shaders.fill);
+        defer vk.destroyShaderModule(renderer.ctx.device, visbuffer_module, null);
+        const stages: [2]vk.PipelineShaderStageCreateInfo = .{
+            .{ .module = visbuffer_module, .pName = "main", .stage = .{ .vertex = true } },
+            .{ .module = visbuffer_module, .pName = "main", .stage = .{ .fragment = true } },
+        };
+        const render_ci: vk.PipelineRenderingCreateInfo = .{
+            .colorAttachmentCount = 1,
+            .pColorAttachmentFormats = &.{.r32_uint},
+            .depthAttachmentFormat = .d32_sfloat,
+        };
+        const blend_attachments = [_]vk.PipelineColorBlendAttachmentState{
+            .{ .colorWriteMask = @bitCast(@as(u32, 0xF)) },
+        };
+        const ci: vk.GraphicsPipelineCreateInfo = .{
+            .pNext = &render_ci,
+            .stageCount = stages.len,
+            .pStages = &stages,
+            .pVertexInputState = &.{},
+            .pInputAssemblyState = &.{ .topology = .triangle_list },
+            .pViewportState = &.{ .viewportCount = 1, .scissorCount = 1 },
+            .pRasterizationState = &.{ .lineWidth = 1.0, .polygonMode = .fill, .cullMode = .{ .back = true } },
+            .pMultisampleState = &.{ .rasterizationSamples = .{ .@"1" = true } },
+            .pDepthStencilState = &.{ .depthTestEnable = .True, .depthCompareOp = .less_or_equal, .depthWriteEnable = .True },
+            .pColorBlendState = &.{ .attachmentCount = @intCast(blend_attachments.len), .pAttachments = &blend_attachments },
+            .pDynamicState = &.{ .dynamicStateCount = 2, .pDynamicStates = &.{ .viewport, .scissor } },
+            .layout = renderer.graphics_layout,
+        };
+
+        try vk.createGraphicsPipelines(renderer.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&visbuffer_pipeline));
+    }
+
     //TODO: color attachmnt + pipeline creating + starting barriers all should be created from the same function call
     var pbr_pipeline: vk.Pipeline = undefined;
     defer vk.destroyPipeline(renderer.ctx.device, pbr_pipeline, null);
@@ -504,28 +544,16 @@ pub fn main(init: std.process.Init) !void {
         try vk.createGraphicsPipelines(renderer.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&pbr_pipeline));
     }
 
-    var post_layout: vk.PipelineLayout = undefined;
-    defer vk.destroyPipelineLayout(renderer.ctx.device, post_layout, null);
+    var resolve_pipeline: vk.Pipeline = undefined;
+    defer vk.destroyPipeline(renderer.ctx.device, resolve_pipeline, null);
     {
-        const ci: vk.PipelineLayoutCreateInfo = .{
-            .setLayoutCount = 1,
-            .pSetLayouts = @ptrCast(&renderer.desc_man.layout),
-            .pushConstantRangeCount = shaders.box.push_constant_ranges.len,
-            .pPushConstantRanges = @ptrCast(&shaders.box.push_constant_ranges),
-        };
-        try vk.createPipelineLayout(renderer.ctx.device, &ci, null, &post_layout);
-    }
-
-    var boxblur_pipeline: vk.Pipeline = undefined;
-    defer vk.destroyPipeline(renderer.ctx.device, boxblur_pipeline, null);
-    {
-        const box_module = try getShaderModule(renderer.ctx.device, shaders.box);
-        defer vk.destroyShaderModule(renderer.ctx.device, box_module, null);
+        const resolve_module = try getShaderModule(renderer.ctx.device, shaders.resolve);
+        defer vk.destroyShaderModule(renderer.ctx.device, resolve_module, null);
         const ci: vk.ComputePipelineCreateInfo = .{
-            .layout = post_layout,
-            .stage = .{ .stage = .{ .compute = true }, .module = box_module, .pName = "main" },
+            .layout = renderer.graphics_layout,
+            .stage = .{ .stage = .{ .compute = true }, .module = resolve_module, .pName = "main" },
         };
-        try vk.createComputePipelines(renderer.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&boxblur_pipeline));
+        try vk.createComputePipelines(renderer.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&resolve_pipeline));
     }
 
     //basic dt and quit
@@ -625,17 +653,20 @@ pub fn main(init: std.process.Init) !void {
         if (renderer.scene.offset == 2) {
             renderer.scene.reset();
             renderer.poses.reset();
+            renderer.offsets.reset();
+            visbuffer_data.reset();
         }
 
         renderer.scene.append(.{
             .projection = .perspective(cam.fov, aspect, 0.1, 32.0),
             .ortho = .ortho(0.0, @floatFromInt(window_extent.width), 0.0, @floatFromInt(window_extent.height)),
             .cam = cam.pose,
-            .selected = sel,
             .light_pos = .{
                 .x = @as(f32, @floatCast(@sin(std.math.pi * flast * 0.25))) * 4.0,
                 .y = @as(f32, @floatCast(@sin(std.math.pi * flast * 0.125))) * 4.0 - 4,
             },
+            .dimensions = .{ .x = @floatFromInt(window_extent.width), .y = @floatFromInt(window_extent.height) },
+            .selected = sel,
         });
 
         // for (0..3) |i| {
@@ -658,6 +689,17 @@ pub fn main(init: std.process.Init) !void {
         // poses_buffer[fif_index].write(0, poses);
         // poses_buffer[fif_index].write(4 * @sizeOf(Pose), .{ .pos = .{ .z = -2 } });
 
+        var push: gpu.Push = .{
+            .vertices = renderer.vertices.bda(renderer.ctx.device),
+            .indices = renderer.indices.bda(renderer.ctx.device),
+            .scene = renderer.scene.bda(renderer.ctx.device),
+            .poses = renderer.poses.bda(renderer.ctx.device),
+            .materials = renderer.materials.bda(renderer.ctx.device),
+            .offsets = renderer.offsets.bda(renderer.ctx.device),
+            .user_buffer = @enumFromInt(0),
+            .fif_index = @intCast(renderer.fif_index),
+        };
+
         const cb: vk.CommandBuffer = renderer.cmdbuf[renderer.fif_index];
         try vk.resetCommandBuffer(cb, .{});
 
@@ -667,12 +709,12 @@ pub fn main(init: std.process.Init) !void {
             // generate both barriers and rendering attachment info with some renderer call?
             const output_barriers = [_]vk.ImageMemoryBarrier2{
                 .{
-                    .srcStageMask = .{ .compute_shader = true, .color_attachment_output = true },
+                    .srcStageMask = .{ .compute_shader = true },
                     .srcAccessMask = .{},
-                    .dstStageMask = .{ .color_attachment_output = true },
-                    .dstAccessMask = .{ .color_attachment_write = true },
+                    .dstStageMask = .{ .compute_shader = true },
+                    .dstAccessMask = .{ .shader_storage_write = true },
                     .oldLayout = .undefined,
-                    .newLayout = .attachment_optimal,
+                    .newLayout = .general,
                     .image = offscreen_render.handle,
                     .subresourceRange = .{ .aspectMask = .{ .color = true }, .levelCount = 1, .layerCount = 1 },
                 },
@@ -683,7 +725,7 @@ pub fn main(init: std.process.Init) !void {
                     .dstAccessMask = .{ .color_attachment_write = true },
                     .oldLayout = .undefined,
                     .newLayout = .attachment_optimal,
-                    .image = triangle_id.handle,
+                    .image = visbuffer.handle,
                     .subresourceRange = .{ .aspectMask = .{ .color = true }, .levelCount = 1, .layerCount = 1 },
                 },
                 .{
@@ -709,39 +751,33 @@ pub fn main(init: std.process.Init) !void {
             };
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = @intCast(output_barriers.len), .pImageMemoryBarriers = &output_barriers });
 
-            const color_attach_infos = [_]vk.RenderingAttachmentInfo{
-                .{
-                    .imageView = offscreen_render.view,
-                    .imageLayout = .attachment_optimal,
-                    .loadOp = .clear,
-                    .storeOp = .store,
-                    .clearValue = .{ .color = .{ .float32 = .{ 0.0, 0.0, 0.0, 1.0 } } },
-                },
-                .{
-                    .imageView = triangle_id.view,
-                    .imageLayout = .attachment_optimal,
-                    .loadOp = .clear,
-                    .storeOp = .store,
-                    .clearValue = .{ .color = .{ .uint32 = @splat(0.0) } },
-                },
-            };
-            const depth_attach_info: vk.RenderingAttachmentInfo = .{
-                .imageView = depth_buffer.view,
-                .imageLayout = .attachment_optimal,
-                .loadOp = .clear,
-                .storeOp = .dont_care,
-                .clearValue = .{ .depthStencil = .{ .depth = 1.0, .stencil = 0 } },
-            };
-
-            const rendering_info: vk.RenderingInfo = .{
-                .renderArea = .{ .extent = window_extent },
-                .layerCount = 1,
-                .colorAttachmentCount = @intCast(color_attach_infos.len),
-                .pColorAttachments = &color_attach_infos,
-                .pDepthAttachment = &depth_attach_info,
-            };
-
+            //VISBUFFER
             {
+                const color_attach_infos = [_]vk.RenderingAttachmentInfo{
+                    .{
+                        .imageView = visbuffer.view,
+                        .imageLayout = .attachment_optimal,
+                        .loadOp = .clear,
+                        .storeOp = .store,
+                        .clearValue = .{ .color = .{ .uint32 = @splat(std.math.maxInt(u32)) } },
+                    },
+                };
+                const depth_attach_info: vk.RenderingAttachmentInfo = .{
+                    .imageView = depth_buffer.view,
+                    .imageLayout = .attachment_optimal,
+                    .loadOp = .clear,
+                    .storeOp = .dont_care,
+                    .clearValue = .{ .depthStencil = .{ .depth = 1.0, .stencil = 0 } },
+                };
+
+                const rendering_info: vk.RenderingInfo = .{
+                    .renderArea = .{ .extent = window_extent },
+                    .layerCount = 1,
+                    .colorAttachmentCount = @intCast(color_attach_infos.len),
+                    .pColorAttachments = &color_attach_infos,
+                    .pDepthAttachment = &depth_attach_info,
+                };
+
                 vk.cmdBeginRendering(cb, &rendering_info);
                 defer vk.cmdEndRendering(cb);
                 const vp: vk.Viewport = .{
@@ -754,27 +790,20 @@ pub fn main(init: std.process.Init) !void {
                 const scissor: vk.Rect2D = .{ .extent = window_extent };
                 vk.cmdSetScissor(cb, 0, 1, @ptrCast(&scissor));
 
-                vk.cmdBindPipeline(cb, .graphics, pbr_pipeline);
+                vk.cmdBindPipeline(cb, .graphics, visbuffer_pipeline);
                 vk.cmdBindIndexBuffer(cb, renderer.indices.handle(), 0, .uint32);
                 vk.cmdBindDescriptorSets(cb, .graphics, renderer.graphics_layout, 0, 1, @ptrCast(&renderer.desc_man.set), 0, undefined);
-                const push: gpu.Push = .{
-                    .vertices = renderer.vertices.bda(renderer.ctx.device),
-                    .scene = renderer.scene.bda(renderer.ctx.device),
-                    .poses = renderer.poses.bda(renderer.ctx.device),
-                    .materials = renderer.materials.bda(renderer.ctx.device),
-                    .fif_index = renderer.fif_index,
-                };
-                vk.cmdPushConstants(cb, renderer.graphics_layout, .{ .vertex = true }, 0, @sizeOf(gpu.Push), @ptrCast(&push));
+                vk.cmdPushConstants(cb, renderer.graphics_layout, .{ .compute = true, .vertex = true }, 0, @sizeOf(gpu.Push), @ptrCast(&push));
 
                 vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Vertex Pulling" });
 
                 //FIX:
-                // vk.cmdDrawIndexed(cb, plane.index_count, 1, plane.start_index, plane.start_vertex, 4);
-                // vk.cmdDrawIndexed(cb, suzanne_pulled.index_count, 3, suzanne_pulled.start_index, suzanne_pulled.start_vertex, 0);
+                renderer.offsets.append(helm.meshes[0].offsets);
                 vk.cmdDrawIndexed(cb, helm.meshes[0].offsets.index_count, 1, helm.meshes[0].offsets.start_index, helm.meshes[0].offsets.start_vertex, helm.meshes[0].material);
 
                 //TODO: multiple meshes part of 1 model, how to resolve position then?
                 for (sponza.meshes) |mesh| {
+                    renderer.offsets.append(mesh.offsets);
                     vk.cmdDrawIndexed(cb, mesh.offsets.index_count, 1, mesh.offsets.start_index, mesh.offsets.start_vertex, mesh.material);
                 }
 
@@ -786,69 +815,32 @@ pub fn main(init: std.process.Init) !void {
                 // vk.cmdDrawIndexed(cb, cube.offsets.index_count, 1, cube.offsets.start_index, cube.offsets.start_vertex, skybox_id);
 
                 // vk.cmdEndDebugUtilsLabelEXT(cb);
-
-                _ = cube;
-                _ = skybox_id;
-                vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Text" });
-
-                //FIX:
-                // vk.cmdBindPipeline(cb, .graphics, text_pipeline);
-                // vk.cmdBindVertexBuffers(cb, 0, 1, @ptrCast(&text_quad.handle), &.{0});
-
-                // //cant know
-                // var pos: Vec2 = .{ .x = mouse_pos.x, .y = mouse_pos.y };
-                // //TODO: new lines
-                // const text = try std.fmt.allocPrint(a_frame, "frametimeg,: {d:.3}ms±😊\n {}, {}", .{ elasped / 1000, window_extent.width, window_extent.height });
-                // const scale: f32 = 1;
-                // for (text, 0..) |char, i| {
-                //     if (char == ' ') {
-                //         pos.x += space_advance;
-                //         continue;
-                //     }
-                //     const ch = charmap.get(char) orelse continue;
-
-                //     const w: f32 = ch.scale.x * scale;
-                //     const h: f32 = ch.scale.y * scale;
-                //     const charmod: Vec2 = .{
-                //         .x = ch.bearing.x * scale,
-                //         .y = (ch.scale.y + ch.bearing.y) * scale,
-                //     };
-                //     // log.debug("{c}: {}", .{ char, charmod });
-                //     const vertices = [_]f32{
-                //         charmod.x + pos.x,     charmod.y + pos.y - h, ch.uv.x,     ch.uv.y,
-                //         charmod.x + pos.x,     charmod.y + pos.y,     ch.uv.x,     ch.uv_max.y,
-                //         charmod.x + pos.x + w, charmod.y + pos.y,     ch.uv_max.x, ch.uv_max.y,
-                //         charmod.x + pos.x,     charmod.y + pos.y - h, ch.uv.x,     ch.uv.y,
-                //         charmod.x + pos.x + w, charmod.y + pos.y,     ch.uv_max.x, ch.uv_max.y,
-                //         charmod.x + pos.x + w, charmod.y + pos.y - h, ch.uv_max.x, ch.uv.y,
-                //     };
-                //     text_quad.write(quad_size * i, &vertices);
-                //     vk.cmdDraw(cb, 6, 1, @intCast(i * 6), 0);
-                //     pos.x += ch.advance * scale;
-                // }
-                // vk.cmdEndDebugUtilsLabelEXT(cb);
+                // _ = cube;
+                // _ = skybox_id;
             }
-
-            // vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Post Proccess" });
-            vk.cmdBindPipeline(cb, .compute, boxblur_pipeline);
-            // vk.cmdBindDescriptorSets(cb, .compute, post_layout, 0, 1, @ptrCast(&renderer.descriptor_set), 0, undefined);
-            // vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 0, 8, @ptrCast(&mouse_pos));
-            // vk.cmdPushConstants(cb, post_layout, .{ .compute = true }, 8, 4, @ptrCast(&offscreen_view));
+            // RESOLVE:
+            vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Resolve" });
+            vk.cmdBindPipeline(cb, .compute, resolve_pipeline);
+            vk.cmdBindDescriptorSets(cb, .compute, renderer.graphics_layout, 0, 1, @ptrCast(&renderer.desc_man.set), 0, undefined);
+            visbuffer_data.append(.{ .x = visbuffer_idx, .y = offscreenrender_idx });
+            push.user_buffer = visbuffer_data.bda(renderer.ctx.device);
+            vk.cmdPushConstants(cb, renderer.graphics_layout, .{ .vertex = true, .compute = true }, 0, @sizeOf(gpu.Push), @ptrCast(&push));
             const compute_barrier1: vk.ImageMemoryBarrier2 = .{
                 .srcStageMask = .{ .color_attachment_output = true },
                 .srcAccessMask = .{ .color_attachment_write = true },
                 .dstStageMask = .{ .compute_shader = true },
-                .dstAccessMask = .{ .shader_storage_read = true, .shader_storage_write = true },
+                .dstAccessMask = .{ .shader_sampled_read = true },
                 .oldLayout = .attachment_optimal,
-                .newLayout = .general,
-                .image = offscreen_render.handle,
+                .newLayout = .read_only_optimal,
+                .image = visbuffer.handle,
                 .subresourceRange = .{ .aspectMask = .{ .color = true }, .layerCount = 1, .levelCount = 1 },
             };
             vk.cmdPipelineBarrier2(cb, &.{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = @ptrCast(&compute_barrier1) });
-            vk.cmdDispatch(cb, (window_extent.width / shaders.box.local_size[0]) + 1, (window_extent.height / shaders.box.local_size[1]) + 1, 1);
+            vk.cmdDispatch(cb, (window_extent.width / shaders.resolve.local_size[0]) + 1, (window_extent.height / shaders.resolve.local_size[1]) + 1, 1);
 
-            // vk.cmdEndDebugUtilsLabelEXT(cb);
+            vk.cmdEndDebugUtilsLabelEXT(cb);
 
+            // PRESENT:
             vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Blit" });
             const transfer_barrier: vk.ImageMemoryBarrier2 = .{
                 .srcStageMask = .{ .compute_shader = true },
@@ -926,11 +918,16 @@ pub fn main(init: std.process.Init) !void {
             try vk.queueWaitIdle(renderer.ctx.queue);
             try swapchain.recreate(&renderer.ctx, window_extent);
 
+            //FIX can we have a recreate method or smth?
             renderer.destroyTexture(offscreen_render);
-            offscreen_render = try renderer.createTexture2D(.r16g16b16a16_unorm, window_extent, .{ .color_attachment = true, .transfer_src = true }, .{ .color = true });
+            offscreen_render = try renderer.createTexture2D(.r16g16b16a16_unorm, window_extent, .{ .storage = true, .transfer_src = true }, .{ .color = true });
 
-            renderer.destroyTexture(triangle_id);
-            triangle_id = try renderer.createTexture2D(.r32_uint, window_extent, .{ .color_attachment = true }, .{ .color = true });
+            renderer.destroyTexture(visbuffer);
+            visbuffer = try renderer.createTexture2D(.r32_uint, window_extent, .{ .color_attachment = true, .sampled = true }, .{ .color = true });
+
+            //FIX:
+            visbuffer_idx = renderer.desc_man.appendSampled(renderer.ctx.device, visbuffer.view, .read_only_optimal);
+            offscreenrender_idx = renderer.desc_man.appendStorage(renderer.ctx.device, offscreen_render.view, .general);
 
             renderer.destroyTexture(depth_buffer);
             depth_buffer = try renderer.createTexture2D(.d32_sfloat, window_extent, .{ .depth_stencil_attachment = true }, .{ .depth = true });

@@ -7,14 +7,9 @@ public float3 normalsToViewSpace(float3 tangent_normals, float3 pos, float2 UV, 
     float2 st1 = ddx(UV);
     float2 st2 = ddy(UV);
 
-    float3 T  = normalize(Q1*st2.y - Q2*st1.y);
-    float3 N  = normalize(vertex_normals);
-    T = normalize(T - N * dot(N, T));
-
-    float det = st1.x * st2.y - st2.x * st1.y;
-    float det_sign = (det < 0.0) ? -1.0 : 1.0;
-    float3 B  = det_sign * cross(N, T);
-
+    float3 N = normalize(vertex_normals);
+    float3 T = normalize(Q1*st2.y - Q2*st1.y);
+    float3 B = -normalize(cross(N, T));
     float3x3 TBN = float3x3(T, B, N);
 
     return normalize(mul(tangent_normals, TBN));

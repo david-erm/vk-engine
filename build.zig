@@ -90,9 +90,10 @@ pub fn build(b: *std.Build) !void {
 
     const shaders = try compileShaders(b, vk, target, optimize, &.{
         "src/shaders/skybox.slang",
-        "src/shaders/box.slang",
         "src/shaders/text.slang",
         "src/shaders/pbr.slang",
+        "src/shaders/visbuffer/fill.slang",
+        "src/shaders/visbuffer/resolve.slang",
     });
 
     const exe = b.addExecutable(.{
@@ -211,6 +212,7 @@ pub fn compileShaders(
     optimize: std.builtin.OptimizeMode,
     paths: []const []const u8,
 ) !*std.Build.Module {
+    // TODO:
     const reflect_gen = b.addExecutable(.{
         .name = "shader_reflection",
         .root_module = b.createModule(.{
@@ -236,6 +238,7 @@ pub fn compileShaders(
             "-fvk-use-scalar-layout",
             "-matrix-layout-column-major",
             "-g",
+            "-O3",
             "-target",
             "spirv",
         });

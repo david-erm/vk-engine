@@ -90,6 +90,7 @@ pub const Context = struct {
         const enableVKFeatures: vk.PhysicalDeviceFeatures = .{
             .samplerAnisotropy = .True,
             .shaderInt64 = .True,
+            .geometryShader = .True,
         };
         try vk.createDevice(ctx.pdevice, &.{
             .pNext = &enableVK13Features,
