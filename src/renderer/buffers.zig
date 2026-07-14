@@ -110,7 +110,7 @@ pub const DescriptorManager = struct {
     current_storage: u32,
     current_sampler: u32,
 
-    //TODO: worry about freeing slots later
+    //FIX: worry about freeing slots later
     // sampled_free: std.SinglyLinkedList,
     // sampler_free: std.SinglyLinkedList,
     // storage_free: std.SinglyLinkedList,

@@ -34,7 +34,7 @@ pub const Scene = extern struct {
     ortho: math.Mat4 = .zero,
     cam: Pose = .{},
     light_pos: math.Vec4 = .{ .x = 0.0, .y = -10.0, .z = 0.0, .w = 0.0 },
-    dimensions: Vec2,
+    dimensions: math.UVec2,
     selected: u32 = 1,
 };
 
@@ -45,7 +45,9 @@ pub const Push = extern struct {
     vertices: vk.DeviceAddress,
     indices: vk.DeviceAddress,
     offsets: vk.DeviceAddress,
+    material_shader_params: vk.DeviceAddress,
     user_buffer: vk.DeviceAddress,
+    tiles: vk.DeviceAddress,
     fif_index: u32,
 };
 

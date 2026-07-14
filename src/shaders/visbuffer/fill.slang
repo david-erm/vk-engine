@@ -1,6 +1,8 @@
 import "../structs";
 import common;
 
+#include "defines.slang"
+
 struct VSOut {
   float4 pos : SV_Position; 
   uint32_t draw_id;

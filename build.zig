@@ -94,6 +94,7 @@ pub fn build(b: *std.Build) !void {
         "src/shaders/pbr.slang",
         "src/shaders/visbuffer/fill.slang",
         "src/shaders/visbuffer/resolve.slang",
+        "src/shaders/visbuffer/worklist.slang",
     });
 
     const exe = b.addExecutable(.{
@@ -119,6 +120,7 @@ pub fn build(b: *std.Build) !void {
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
+    run_cmd.setCwd(.{ .relative = .{ .base = .install_prefix } });
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
 
@@ -231,7 +233,7 @@ pub fn compileShaders(
     for (paths) |path| {
         const codegen_step = b.addRunArtifact(reflect_gen);
 
-        const filename = std.fs.path.stem(path);
+        const filename = Io.Dir.path.stem(path);
         const slangc = b.addSystemCommand(&.{
             "slangc",
             "-Wno-39001",

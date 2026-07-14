@@ -3,6 +3,7 @@
 - export a vk format to avoid stuff having to import vk proper
 - why wtf are ImageHandles same as index into descriptor anyway? just have an internal counter and vk.updateDescriptor on the fly, clear every frame?
     - def do it on import time
+    - descriptors are still a tragedy
 - create zon schema for texture metadata to turn in ktx (really can just be the vkimageci as a zon)
 - descriptors as List do not work, go back to memory pool model. Also I still have the 2 handle problem
 

@@ -89,6 +89,10 @@ pub const Vec3 = extern struct {
     y: f32 = 0,
     z: f32 = 0,
 
+    pub fn fromArray(arr: [3]f32) Vec3 {
+        return .{ .x = arr[0], .y = arr[1], .z = arr[2] };
+    }
+
     pub fn rotate(v: Vec3, q: Quat) Vec3 {
         const vq: Quat = .{ .x = v.x, .y = v.y, .z = v.z, .r = 0 };
         const result = q.mul(vq).mul(q.conjugate());

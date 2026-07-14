@@ -29,7 +29,7 @@ public struct Scene {
     public float4x4 ortho;
     public Pose cam; 
     public float4 lightPos;
-    public float2 dimensions;
+    public uint32_t2 dimensions;
     public uint32_t selected;
 };
 
@@ -45,6 +45,10 @@ public struct Vertex {
     public float2 uv;
 };
 
+public struct DispatchIndirectCommand {
+    public uint32_t3 group_size;  
+};
+
 
 public struct Push {
     public Scene* scene; 
@@ -53,7 +57,9 @@ public struct Push {
     public Vertex* vertices;
     public uint32_t3* indices;
     public Offsets* offsets;
+    public DispatchIndirectCommand* material_params;
     public void* user_buffer;
+    public uint32_t2* tiles;
     public uint32_t fif_index;
     private uint32_t pad;
 };

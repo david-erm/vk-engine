@@ -56,9 +56,12 @@ cp: vk.CommandPool,
 cmdbuf: [max_frames]vk.CommandBuffer,
 transfer_cmdbuf: vk.CommandBuffer,
 
-//resources
+// resources
+// TODO: track buffers as well maybe?
+// Need a full cohesive idea of a pipeline
 images: MemoryPool(ImageR, .{ .growable = false }),
 
+// Just make a map for each sampled/storage
 desc_man: buffers.DescriptorManager,
 graphics_layout: vk.PipelineLayout,
 
@@ -429,7 +432,7 @@ pub fn loadGltf(renderer: *Renderer, io: Io, gpa: Allocator, path: []const u8) !
     var images: std.ArrayList(*ImageR) = .empty;
     var meshes: std.ArrayList(Mesh) = .empty;
     for (gltf.data.nodes) |node| {
-        const scale: zkf.Vec3 = @bitCast(node.scale);
+        const scale: zkf.Vec3 = .fromArray(node.scale);
         const gl_to_vulkan = zkf.Vec3{ .x = 1, .y = -1, .z = -1 };
 
         const mesh_idx = node.mesh orelse continue;
