@@ -70,36 +70,3 @@ pub const Camera = struct {
         cam.pose.pos = Vec3.add(cam.pose.pos, .rotate(axis.scale(dT * cam.movespeed), cam.pose.rot));
     }
 };
-
-pub const FileDataCtx = struct {
-    io: *std.Io,
-    arena: std.mem.Allocator,
-    mmaps: std.ArrayList(std.Io.File.MemoryMap),
-    count: usize = 0,
-};
-
-pub fn get_file_data(ioparam: ?*anyopaque, filename: [*c]const u8, _: i32, _: ?[*]const u8, buf: ?*?[*]u8, len: ?*usize) callconv(.c) void {
-    if (filename == null) {
-        log.err("bad filename", .{});
-        buf.?.* = null;
-        len.?.* = 0;
-        return;
-    }
-    var ctx: *FileDataCtx = @ptrCast(@alignCast(ioparam));
-    const io = ctx.io.*;
-    ctx.count += 1;
-
-    const cwd = std.Io.Dir.cwd();
-    const sfilename = std.mem.span(filename);
-    log.debug("attempting to open: {s}", .{sfilename});
-
-    const file = cwd.openFile(io, sfilename, .{ .mode = .read_only }) catch @panic("failed to open file");
-    defer file.close(io);
-
-    const stat = file.stat(io) catch @panic("failed to stat file");
-    const mmap = file.createMemoryMap(io, .{ .len = stat.size, .protection = .{ .read = true } }) catch @panic("failed to mmap file");
-    ctx.mmaps.append(ctx.arena, mmap) catch @panic("fuck");
-
-    buf.?.* = mmap.memory.ptr;
-    len.?.* = mmap.memory.len;
-}

@@ -46,20 +46,22 @@ public struct Vertex {
 };
 
 public struct DispatchIndirectCommand {
-    public uint32_t3 group_size;  
+    public uint32_t x;
+    public uint32_t y;
+    public uint32_t z;
 };
 
 
 public struct Push {
-    public Scene* scene; 
-    public Pose* poses;
-    public Material* materials;
-    public Vertex* vertices;
-    public uint32_t3* indices;
-    public Offsets* offsets;
-    public DispatchIndirectCommand* material_params;
-    public void* user_buffer;
-    public uint32_t2* tiles;
-    public uint32_t fif_index;
-    private uint32_t pad;
+    public Scene* scene;  // 8
+    public Pose* poses; // 16
+    public Material* materials; // 24
+    public Vertex* vertices; // 32
+    public uint32_t3* indices; // 40
+    public Offsets* offsets; // 48
+    public DispatchIndirectCommand* material_params; // 56
+    public void* user_buffer; // 64
+    public uint32_t2* tiles; // 72
+    public uint32_t fif_index; 
+    private uint32_t pad; // 80
 };

@@ -59,7 +59,6 @@ pub fn build(b: *std.Build) !void {
 
     const c = b.addTranslateC(.{
         .root_source_file = b.addWriteFiles().add("c.h",
-            \\#include "tinyobj_loader_c.h"
             \\#include <ft2build.h>
             \\#define FT_FREETYPE_H
             \\#include <freetype/freetype.h>
@@ -79,8 +78,6 @@ pub fn build(b: *std.Build) !void {
             \\#include <vulkan/vulkan.h>
             \\#define VMA_IMPLEMENTATION
             \\#include <vma/vk_mem_alloc.h>
-            \\#define TINYOBJ_LOADER_C_IMPLEMENTATION
-            \\#include "tinyobj_loader_c.h"
         ),
     });
     cMod.addIncludePath(vulkan);

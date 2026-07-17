@@ -831,7 +831,7 @@ pub fn main(init: std.process.Init) !void {
                 vk.cmdBindDescriptorSets(cb, .graphics, renderer.graphics_layout, 0, 1, @ptrCast(&renderer.desc_man.set), 0, undefined);
                 vk.cmdPushConstants(cb, renderer.graphics_layout, .{ .compute = true, .vertex = true }, 0, @sizeOf(gpu.Push), @ptrCast(&push));
 
-                vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Vertex Pulling" });
+                vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Visbuffer Fill" });
 
                 //FIX:
                 renderer.offsets.append(helm.meshes[0].offsets);
@@ -843,19 +843,19 @@ pub fn main(init: std.process.Init) !void {
                     vk.cmdDrawIndexed(cb, mesh.offsets.index_count, 1, mesh.offsets.start_index, mesh.offsets.start_vertex, mesh.material);
                 }
 
-                vk.cmdEndDebugUtilsLabelEXT(cb);
+                // vk.cmdEndDebugUtilsLabelEXT(cb);
 
                 // vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Skybox" });
 
                 // vk.cmdBindPipeline(cb, .graphics, skybox_pipeline);
                 // vk.cmdDrawIndexed(cb, cube.offsets.index_count, 1, cube.offsets.start_index, cube.offsets.start_vertex, skybox_id);
 
-                // vk.cmdEndDebugUtilsLabelEXT(cb);
+                vk.cmdEndDebugUtilsLabelEXT(cb);
                 // _ = cube;
                 // _ = skybox_id;
             }
-            // RESOLVE:
-            vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Worklist gen" });
+
+            vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Per Material Worklist generation" });
             vk.cmdBindPipeline(cb, .compute, computes.get(.worklist));
             vk.cmdBindDescriptorSets(cb, .compute, renderer.graphics_layout, 0, 1, @ptrCast(&renderer.desc_man.set), 0, undefined);
             visbuffer_data.append(.{ .x = visbuffer_idx, .y = offscreenrender_idx });
@@ -903,6 +903,8 @@ pub fn main(init: std.process.Init) !void {
             //FIX: avoid dispatching more tiles than neccesary
             vk.cmdDispatch(cb, (window_extent.width / shaders.resolve.local_size[0]) + 1, (window_extent.height / shaders.resolve.local_size[1]) + 1, 1);
 
+            vk.cmdEndDebugUtilsLabelEXT(cb);
+            vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Material Dispatches" });
             const dispatch_params_barrier = [_]vk.BufferMemoryBarrier2{
                 .{
                     .srcStageMask = .{ .compute_shader = true },
@@ -920,7 +922,6 @@ pub fn main(init: std.process.Init) !void {
 
             vk.cmdEndDebugUtilsLabelEXT(cb);
 
-            // PRESENT:
             vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Blit" });
             const transfer_barrier: vk.ImageMemoryBarrier2 = .{
                 .srcStageMask = .{ .compute_shader = true },

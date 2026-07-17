@@ -14,8 +14,9 @@ void main(uniform Push push, uint2 group_id : SV_GroupID, uint2 local_id : SV_Gr
 
     //global init
     if (global_index < MAT_SHADER_NUM) {
-        Scene scene = push.scene[push.fif_index];
-        push.material_params[global_index].group_size = {0, 1, 1};  
+        push.material_params[global_index].x = 0;  
+        push.material_params[global_index].y = 1;  
+        push.material_params[global_index].z = 1;  
     }
 
     uint32_t2* data = (uint32_t2*)push.user_buffer;
@@ -45,7 +46,7 @@ void main(uniform Push push, uint2 group_id : SV_GroupID, uint2 local_id : SV_Gr
     if (shader_id == 0) return;
     while (shader_id < MAT_SHADER_NUM) {
         if (shader_present_in_tile[shader_id] > 0) {
-            InterlockedAdd(push.material_params[shader_id].group_size.x, 1);
+            InterlockedAdd(push.material_params[shader_id].x, 1);
             uint32_t idx = 0; 
             InterlockedAdd(push.tiles[0].x, 1, idx);
             push.tiles[idx + 1].x = tile_index_packed;

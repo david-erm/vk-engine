@@ -1,4 +1,3 @@
-//TODO: isnt this just a renderer?
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -334,30 +333,6 @@ pub fn unloadModel(renderer: *Renderer, gpa: Allocator, model: *const Model) voi
     gpa.free(model.meshes);
 }
 
-// fn getHate(
-//     manager: *Renderer,
-//     io: Io,
-//     gpa: Allocator,
-//     ctx: *const Context,
-//     cp: vk.CommandPool,
-//     gltf: *const Gltf,
-//     dir: Io.Dir,
-//     model_name: []const u8,
-//     tex_type: []const u8,
-//     i: usize,
-//     info: anytype,
-// ) !Hate {
-//     const path = gltf.data.images[info.index].uri.?;
-//     log.debug("Loading {q}", .{path});
-//     const file = try dir.readFileAlloc(io, path, gpa, .unlimited);
-//     defer gpa.free(file);
-//     const hate = try manager.loadTextureFromMemory(ctx, gpa, cp, file);
-//     var buf: [256]u8 = undefined;
-//     const name = try std.fmt.bufPrintSentinel(&buf, "{s}:{s}#{}", .{ model_name, tex_type, i }, 0);
-//     try vk.nameHandle(ctx.device, manager.getImage(hate.image), name.ptr);
-//     return hate;
-// }
-
 fn thing(renderer: *Renderer, io: Io, gpa: Allocator, gltf: *Gltf, dir: Io.Dir, info: anytype) !*ImageR {
     const image_path = gltf.data.images[info.index].uri.?;
     log.debug("Loading {q}", .{image_path});
@@ -503,57 +478,6 @@ pub fn loadGltf(renderer: *Renderer, io: Io, gpa: Allocator, path: []const u8) !
     return out;
 }
 
-pub fn loadObj(manager: *Renderer, arena: std.mem.Allocator, io: *std.Io, path: [*:0]const u8) !Mesh {
-    var attrib: c.tinyobj_attrib_t = undefined;
-    var shapes_num: usize = 0;
-    var shapes: ?[*]c.tinyobj_shape_t = null;
-
-    const vert_start: i32 = @intCast(manager.vertices.offset);
-    const idx_start: u32 = @intCast(manager.indices.offset);
-
-    //not doing shi with these
-    var materials_num: usize = 0;
-    var materials: ?[*]c.tinyobj_material_t = null;
-
-    var ctx: zkf.FileDataCtx = .{
-        .io = io,
-        .arena = arena,
-        .mmaps = .empty,
-    };
-
-    const ret = c.tinyobj_parse_obj(&attrib, &shapes, &shapes_num, &materials, &materials_num, path, zkf.get_file_data, &ctx, c.TINYOBJ_FLAG_TRIANGULATE);
-    for (ctx.mmaps.items) |*mmap| {
-        mmap.destroy(io.*);
-    }
-    ctx.mmaps.deinit(ctx.arena);
-    if (ret != 0) @panic("loading obj failed");
-
-    for (0..attrib.num_faces, attrib.faces) |i, face| {
-        const v_start: usize = @intCast(face.v_idx * 3);
-        const vn_start: usize = @intCast(face.vn_idx * 3);
-        const vt_start: usize = @intCast(face.vt_idx * 2);
-
-        const vert: st.Vertex = .{
-            .pos = .{ .x = attrib.vertices[v_start], .y = -attrib.vertices[v_start + 1], .z = attrib.vertices[v_start + 2] },
-            .norm = .{ .x = attrib.normals[vn_start], .y = -attrib.normals[vn_start + 1], .z = attrib.normals[vn_start + 2] },
-            .uv = .{ .x = attrib.texcoords[vt_start], .y = 1.0 - attrib.texcoords[vt_start] },
-        };
-        manager.vertices.append(vert);
-        manager.indices.append(@as(IndexType, @intCast(i)));
-    }
-    c.tinyobj_attrib_free(&attrib);
-    c.tinyobj_materials_free(materials, materials_num);
-    c.tinyobj_shapes_free(shapes, shapes_num);
-
-    return .{
-        .offsets = .{
-            .start_index = idx_start,
-            .index_count = attrib.num_faces,
-            .start_vertex = vert_start,
-        },
-    };
-}
-
 pub fn addMesh(manager: *Renderer, indices: []const IndexType, vertices: []const st.Vertex) Mesh {
     const mesh: Mesh = .{
         .start_vertex = @intCast(manager.vert_offset / @sizeOf(st.Vertex)),
@@ -648,5 +572,3 @@ pub fn createTexture2D(renderer: *Renderer, format: vk.Format, extent: vk.Extent
 
     return renderer.createTexture(&ci, &vci);
 }
-
-pub fn loadLevel() void {}

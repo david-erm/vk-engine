@@ -1,4 +1,5 @@
 # WORK: 
+- model + material shader for light orb
 - generate slang structs from zig structs
 - export a vk format to avoid stuff having to import vk proper
 - why wtf are ImageHandles same as index into descriptor anyway? just have an internal counter and vk.updateDescriptor on the fly, clear every frame?
@@ -17,6 +18,7 @@
     - writing ktx2 not very hard?
 - meshoptimizer
 - TrueType instead of freetype
+- Vma virtual allocators for meshes
 
 # GOAL:
 - start making abstractions
@@ -28,6 +30,3 @@
 - intrusive free list downsides?
 - binary blop with compile time enums that index into offset information
 - or ig should probably be runtime
-
-
-
