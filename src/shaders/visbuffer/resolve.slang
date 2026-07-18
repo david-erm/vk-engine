@@ -15,32 +15,32 @@ float4 pixelShade(Push* push, Vertex v, uint32_t draw_id, Derivatives d) {
     const float2 raw_n = sampled[NonUniformResourceIndex(mat.normal)].SampleGrad(samplers[0], v.uv, d.uv[0], d.uv[1]).rg;
     const float2 roughness_metallic = sampled[NonUniformResourceIndex(mat.metallic_roughness)].SampleGrad(samplers[0], v.uv, d.uv[0], d.uv[1]).rg;
 
-    Scene scene = push.scene[push.fif_index];
-    Pose pose = push.poses[draw_id];
+    const Scene scene = push.scene[push.fif_index];
+    const Pose pose = push.poses[draw_id];
 
     const float3 world_pos = pose.transform(v.pos);
     const float3 world_normals = rotate(v.norm, pose.rot);
 
     //per material
     const float3 N = calcNormals(restoreNormal(raw_n), world_pos, v.uv, world_normals, d);
-    const float3 V = scene.cam.pos.xyz - world_pos;
+    const float3 V = normalize(scene.cam.pos.xyz - world_pos);
     const float3 F0 = lerp(F0base, albedo, roughness_metallic.g);
     //used many times
     const float NdotV = max(dot(N, V), 0.0);
 
     //per light
-    const float3 L = scene.lightPos.xyz - world_pos;
+    const float3 L = normalize(scene.lightPos.xyz - world_pos);
+    const float distance = length(scene.lightPos.xyz - world_pos);
     const float3 H = normalize(V + L);
-    const float distance = length(L);
-    const float attenuation = 1 / (distance * distance) * 10.0;
+    const float attenuation = 1 / (distance * distance) * 4.0;
     //used many times
     const float NdotL = max(dot(N, L), 0.0);
 
     const float3 F = fresnelSchlick(clamp(dot(H, V), 0.0, 1.0), F0);
     const float3 kD = (float3(1.0) - F) * (1.0 - roughness_metallic.g); 
 
-    const float3 NDF = distributionGGX(N, H, roughness_metallic.r);
-    const float3 G = geometrySmith(NdotV, NdotL, roughness_metallic.r);
+    const float NDF = distributionGGX(N, H, roughness_metallic.r);
+    const float G = geometrySmith(NdotV, NdotL, roughness_metallic.r);
 
     const float3 numerator = NDF * G * F;
     const float3 denominator = (4.0 * NdotV * NdotL) + 0.0001;
@@ -97,8 +97,8 @@ void main(uint2 id_local : SV_GroupThreadID, uint2 gid : SV_GroupID, uniform Pus
     const float3 interpolated_v = InterpolateWithDeriv(bary, vertices[0].uv.y, vertices[1].uv.y, vertices[2].uv.y);
 
     const float2 UV = float2(interpolated_u.x, interpolated_v.x);
-    const float2 grad_x = float2(interpolated_u.y, interpolated_v.y);
-    const float2 grad_y = float2(interpolated_u.z, interpolated_v.z);
+    const float2 uv_grad_x = float2(interpolated_u.y, interpolated_v.y);
+    const float2 uv_grad_y = float2(interpolated_u.z, interpolated_v.z);
 
     const float3 interpolated_posx = InterpolateWithDeriv(bary, vertices[0].pos.x, vertices[1].pos.x, vertices[2].pos.x);
     const float3 interpolated_posy = InterpolateWithDeriv(bary, vertices[0].pos.y, vertices[1].pos.y, vertices[2].pos.y);
@@ -116,7 +116,7 @@ void main(uint2 id_local : SV_GroupThreadID, uint2 gid : SV_GroupID, uniform Pus
 
     const Vertex v = {pos, norm, UV};
     const Derivatives d = {
-        float2x2(grad_x, grad_y),
+        float2x2(uv_grad_x, uv_grad_y),
         float2x3(pos_gradx, pos_grady),
     };
     

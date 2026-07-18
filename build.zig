@@ -3,6 +3,8 @@ const Io = std.Io;
 const Build = std.Build;
 const log = std.log.scoped(.build);
 
+const materials = @import("src/renderer/materials.zig");
+
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -88,7 +90,6 @@ pub fn build(b: *std.Build) !void {
     const shaders = try compileShaders(b, vk, target, optimize, &.{
         "src/shaders/skybox.slang",
         "src/shaders/text.slang",
-        "src/shaders/pbr.slang",
         "src/shaders/visbuffer/fill.slang",
         "src/shaders/visbuffer/resolve.slang",
         "src/shaders/visbuffer/worklist.slang",

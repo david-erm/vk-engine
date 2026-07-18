@@ -535,43 +535,6 @@ pub fn main(init: std.process.Init) !void {
         try vk.createGraphicsPipelines(renderer.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&visbuffer_pipeline));
     }
 
-    //TODO: color attachmnt + pipeline creating + starting barriers all should be created from the same function call
-    var pbr_pipeline: vk.Pipeline = undefined;
-    defer vk.destroyPipeline(renderer.ctx.device, pbr_pipeline, null);
-    {
-        const pbr_module = try getShaderModule(renderer.ctx.device, shaders.pbr);
-        defer vk.destroyShaderModule(renderer.ctx.device, pbr_module, null);
-        const stages: [2]vk.PipelineShaderStageCreateInfo = .{
-            .{ .module = pbr_module, .pName = "main", .stage = .{ .vertex = true } },
-            .{ .module = pbr_module, .pName = "main", .stage = .{ .fragment = true } },
-        };
-        const render_ci: vk.PipelineRenderingCreateInfo = .{
-            .colorAttachmentCount = 2,
-            .pColorAttachmentFormats = &.{ .r16g16b16a16_unorm, .r32_uint },
-            .depthAttachmentFormat = .d32_sfloat,
-        };
-        const blend_attachments = [_]vk.PipelineColorBlendAttachmentState{
-            .{ .colorWriteMask = @bitCast(@as(u32, 0xF)) },
-            .{ .colorWriteMask = @bitCast(@as(u32, 0xF)) },
-        };
-        const ci: vk.GraphicsPipelineCreateInfo = .{
-            .pNext = &render_ci,
-            .stageCount = stages.len,
-            .pStages = &stages,
-            .pVertexInputState = &.{},
-            .pInputAssemblyState = &.{ .topology = .triangle_list },
-            .pViewportState = &.{ .viewportCount = 1, .scissorCount = 1 },
-            .pRasterizationState = &.{ .lineWidth = 1.0, .polygonMode = .fill, .cullMode = .{ .back = true } },
-            .pMultisampleState = &.{ .rasterizationSamples = .{ .@"1" = true } },
-            .pDepthStencilState = &.{ .depthTestEnable = .True, .depthCompareOp = .less_or_equal, .depthWriteEnable = .True },
-            .pColorBlendState = &.{ .attachmentCount = @intCast(blend_attachments.len), .pAttachments = &blend_attachments },
-            .pDynamicState = &.{ .dynamicStateCount = 2, .pDynamicStates = &.{ .viewport, .scissor } },
-            .layout = renderer.graphics_layout,
-        };
-
-        try vk.createGraphicsPipelines(renderer.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&pbr_pipeline));
-    }
-
     const ComputeShaders = enum {
         resolve,
         worklist,

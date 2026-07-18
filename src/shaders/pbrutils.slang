@@ -41,7 +41,7 @@ public float3 PBRNeutralToneMapping(float3 color) {
 
   float x = min(color.r, min(color.g, color.b));
   const float offset = x < 0.08 ? x  - 6.25 * x * x : 0.04;
-  x -= offset;
+  color -= offset;
   const float peak = max(color.r, max(color.g, color.b));
   if (peak  < start_compression) return color;
 
