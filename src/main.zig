@@ -170,6 +170,9 @@ pub fn main(init: std.process.Init) !void {
     // const cube = try renderer.loadObj(a_static, &io, "assets/cube.obj");
     // const plane = asset.addMesh(&quad_indices, @ptrCast(&plane_vertices));
 
+    // const icosphere = try renderer.loadGltf(io, gpa, "assets/icosphere/icosphere.gltf");
+    // defer renderer.unloadModel(gpa, &icosphere);
+
     const helm = try renderer.loadGltf(io, gpa, "assets/DamagedHelmet/DamagedHelmet.gltf");
     defer renderer.unloadModel(gpa, &helm);
 

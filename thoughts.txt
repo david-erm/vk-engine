@@ -1,4 +1,5 @@
 # WORK: 
+- fix disaster shader organization
 - model + material shader for light orb
 - generate slang structs from zig structs
 - export a vk format to avoid stuff having to import vk proper
