@@ -8,11 +8,11 @@ const materials = @import("src/renderer/materials.zig");
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const bake_optimize = b.option(std.builtin.OptimizeMode, "bake-optimize", "Optimization level for bake step binaries") orelse .ReleaseFast;
+    const bake_optimize = b.option(std.builtin.OptimizeMode, "bake-optimize", "Optimization level for bake step binaries") orelse .fast;
 
     const vulkan_sdk = b.graph.environ_map.get("VULKAN_SDK") orelse {
         log.err("Could not find VulkanSDK. Try sourcing setup-env.sh", .{});
-        return;
+        return error.NoVulkanSDK;
     };
     log.info("VulkanSDK at: {s}", .{vulkan_sdk});
 
@@ -183,8 +183,8 @@ pub fn buildBake(
     const bake_step = b.step("bake", "Bake assets");
 
     const models: []const []const u8 = &.{
-        "../zig-graphics/src/assets/glTF-Sample-Assets/Models/DamagedHelmet/glTF/DamagedHelmet.gltf",
-        "../zig-graphics/src/assets/glTF-Sample-Assets/Models/Sponza/glTF/Sponza.gltf",
+        "../../zig/zig-graphics/src/assets/glTF-Sample-Assets/Models/DamagedHelmet/glTF/DamagedHelmet.gltf",
+        "../../zig/zig-graphics/src/assets/glTF-Sample-Assets/Models/Sponza/glTF/Sponza.gltf",
     };
 
     for (models) |model| {

@@ -233,7 +233,7 @@ pub fn makeKtx(
     defer init.gpa.free(mip_buffer);
 
     const ci: ktx.Texture.CreateInfo = .{
-        .vkFormat = @intFromEnum(settings.bcn_format),
+        .vkFormat = @backingInt(settings.bcn_format),
         .baseWidth = @intCast(width),
         .baseHeight = @intCast(height),
         .numDimensions = 2,
