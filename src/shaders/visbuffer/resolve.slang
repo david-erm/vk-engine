@@ -36,7 +36,7 @@ public float4 pixelShade(Push* push, Vertex v, uint32_t draw_id, Derivatives d) 
     // const float attenuation = (1 / (1 + ((2 * distance) / radius) + ((distance * distance) / (radius * radius)) ));
     const float kl = (2 / radius) * distance;
     const float ks = ((distance * distance) / (radius * radius));
-    const float attenuation = 10.0 / (1 + kl + ks);
+    const float attenuation = 10.0 / (1 + kl + ks) * 5.0;
     //used many times
     const float NdotL = max(dot(N, L), 0.0);
 

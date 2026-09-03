@@ -12,13 +12,11 @@ pub const Vec3 = math.Vec3;
 pub const Quat = math.Quat;
 pub const Pose = math.Pose;
 
-pub const Renderer = @import("renderer/Renderer.zig");
-
 const log = std.log.scoped(.howtovulkan);
 
 pub fn makeError(err: type, ret: anytype) err!void {
     switch (ret) {
-        @enumFromInt(0) => {
+        @fromBackingInt(@intCast(0)) => {
             return;
         },
         inline else => |t| {

@@ -1,29 +1,20 @@
 const std = @import("std");
-const log = std.log.scoped(.howtovulkan);
+const log = std.log.scoped(.main);
 const Io = std.Io;
 
 const vk = @import("vk");
-const vma = @import("vma.zig");
 const shaders = @import("shaders");
 const c = @import("c");
 
+const vma = @import("vma.zig");
 const zkf = @import("zkf.zig");
 const sdl = @import("sdl.zig");
 const math = @import("math.zig");
 
-const gpu = @import("renderer/structs.zig");
-const bufs = @import("renderer/buffers.zig");
-const Swapchain = @import("renderer/Swapchain.zig");
-const Renderer = @import("renderer/Renderer.zig");
-
-const Vertex = math.Vertex;
-const Vec3 = math.Vec3;
-const Vec4 = math.Vec4;
-const Mat4 = math.Mat4;
-const Quat = math.Quat;
-const Vec2 = math.Vec2;
-const Pose = zkf.Pose;
-const Camera = zkf.Camera;
+const gpu = @import("gfx/structs.zig");
+const bufs = @import("gfx/buffers.zig");
+const Swapchain = @import("gfx/Swapchain.zig");
+const Gfx = @import("gfx/gfx.zig");
 
 ///build
 const vk_extensions = @import("vk_extensions");
@@ -38,28 +29,13 @@ pub fn getShaderModule(device: vk.Device, shader: anytype) !vk.ShaderModule {
     return module;
 }
 
-const Glyph = struct {
-    uv: Vec2 = .{},
-    uv_max: Vec2 = .{},
-    bearing: Vec2 = .{},
-    scale: Vec2 = .{},
-    advance: f32 = 0,
-};
-var charmap: std.AutoHashMapUnmanaged(u21, Glyph) = .empty;
-var space_advance: f32 = undefined;
-
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
-    // const a_static = init.arena.allocator();
-    var arena_startup = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    // const a_startup = arena_startup.allocator();
-    // var arena_frame = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    // const a_frame = arena_frame.allocator();
 
-    var cam: Camera = .{ .pose = .{ .pos = .{ .z = 6.0 }, .extra = 0 } };
-    var renderer: Renderer = try .init(gpa);
-    defer renderer.deinit(gpa);
+    var cam: zkf.Camera = .{};
+    var gfx: Gfx = try .init(gpa);
+    defer gfx.deinit(gpa);
 
     var sampler: vk.Sampler = undefined;
     const sampler_ci: vk.SamplerCreateInfo = .{
@@ -71,11 +47,11 @@ pub fn main(init: std.process.Init) !void {
         .borderColor = .float_transparent_black,
         .maxLod = 12,
     };
-    try vk.createSampler(renderer.ctx.device, &sampler_ci, null, &sampler);
-    defer vk.destroySampler(renderer.ctx.device, sampler, null);
+    try vk.createSampler(gfx.ctx.device, &sampler_ci, null, &sampler);
+    defer vk.destroySampler(gfx.ctx.device, sampler, null);
 
     const sampler_write: vk.WriteDescriptorSet = .{
-        .dstSet = renderer.desc_man.set,
+        .dstSet = gfx.desc_man.set,
         .dstBinding = 2,
         .descriptorType = .sampler,
         .descriptorCount = 1,
@@ -84,7 +60,7 @@ pub fn main(init: std.process.Init) !void {
             .sampler = sampler,
         }},
     };
-    vk.updateDescriptorSets(renderer.ctx.device, 1, @ptrCast(&sampler_write), 0, undefined);
+    vk.updateDescriptorSets(gfx.ctx.device, 1, @ptrCast(&sampler_write), 0, undefined);
 
     var window_extent: vk.Extent2D = .{ .width = 2560, .height = 1440 };
     const window = try sdl.createWindow("hello", @intCast(window_extent.width), @intCast(window_extent.height), .{
@@ -96,53 +72,53 @@ pub fn main(init: std.process.Init) !void {
 
     //window? window owns input
     var mouse_mode = true;
-    var mouse_pos: Vec2 = .{ .x = 0, .y = 0 };
+    var mouse_pos: math.Vec2 = .{ .x = 0, .y = 0 };
     var mouse_state: sdl.MouseButtonFlags = .{};
     _ = sdl.setWindowRelativeMouseMode(window, true);
     var fullscreen = true;
 
-    const surface = try sdl.vulkan.createSurface(window, renderer.ctx.instance, null);
-    var swapchain: Swapchain = try .init(&renderer.ctx, gpa, surface, window_extent);
-    defer swapchain.deinit(&renderer.ctx, gpa);
+    const surface = try sdl.vulkan.createSurface(window, gfx.ctx.instance, null);
+    var swapchain: Swapchain = try .init(&gfx.ctx, gpa, surface, window_extent);
+    defer swapchain.deinit(&gfx.ctx, gpa);
 
-    var offscreen_render = try renderer.createTexture2D(
+    var offscreen_render = try gfx.createTexture2D(
         .r16g16b16a16_unorm,
         window_extent,
         .{ .transfer_src = true, .storage = true, .transfer_dst = true },
         .{ .color = true },
     );
-    defer renderer.destroyTexture(offscreen_render);
+    defer gfx.destroyTexture(offscreen_render);
 
-    var visbuffer = try renderer.createTexture2D(
+    var visbuffer = try gfx.createTexture2D(
         .r32_uint,
         window_extent,
         .{ .color_attachment = true, .sampled = true },
         .{ .color = true },
     );
-    defer renderer.destroyTexture(visbuffer);
-    try vk.nameHandle(renderer.ctx.device, visbuffer.handle, "Visbuffer");
-    var visbuffer_idx = renderer.desc_man.appendSampled(renderer.ctx.device, visbuffer.view, .read_only_optimal);
-    var offscreenrender_idx = renderer.desc_man.appendStorage(renderer.ctx.device, offscreen_render.view, .general);
+    defer gfx.destroyTexture(visbuffer);
+    try vk.nameHandle(gfx.ctx.device, visbuffer.handle, "Visbuffer");
+    var visbuffer_idx = gfx.desc_man.appendSampled(gfx.ctx.device, visbuffer.view, .read_only_optimal);
+    var offscreenrender_idx = gfx.desc_man.appendStorage(gfx.ctx.device, offscreen_render.view, .general);
 
-    var depth_buffer = try renderer.createTexture2D(
+    var depth_buffer = try gfx.createTexture2D(
         .d32_sfloat,
         window_extent,
         .{ .depth_stencil_attachment = true },
         .{ .depth = true },
     );
-    defer renderer.destroyTexture(depth_buffer);
+    defer gfx.destroyTexture(depth_buffer);
 
     var visbuffer_data: bufs.GpuMappedPush(math.UVec2) = try .init(
-        renderer.ctx.vka,
-        Renderer.max_frames,
+        gfx.ctx.vka,
+        Gfx.max_frames,
         .{ .storage_buffer = true, .shader_device_address = true },
     );
-    defer visbuffer_data.deinit(renderer.ctx.vka);
+    defer visbuffer_data.deinit(gfx.ctx.vka);
 
     //FIX: USE MATERIAL_SHADER_NUM
     var material_shader_dispatch_params: vk.Buffer = undefined;
     var material_shader_dispatch_alloc: vma.Allocation = undefined;
-    defer vma.destroyBuffer(renderer.ctx.vka, material_shader_dispatch_params, material_shader_dispatch_alloc);
+    defer vma.destroyBuffer(gfx.ctx.vka, material_shader_dispatch_params, material_shader_dispatch_alloc);
     {
         const ci: vk.BufferCreateInfo = .{
             .usage = .{ .indirect_buffer = true, .storage_buffer = true, .shader_device_address = true },
@@ -150,20 +126,20 @@ pub fn main(init: std.process.Init) !void {
             .size = @sizeOf(vk.DispatchIndirectCommand) * 2,
         };
         const aci: vma.AllocationCreateInfo = .{ .usage = .auto };
-        try vma.createBuffer(renderer.ctx.vka, &ci, &aci, &material_shader_dispatch_params, &material_shader_dispatch_alloc, null);
+        try vma.createBuffer(gfx.ctx.vka, &ci, &aci, &material_shader_dispatch_params, &material_shader_dispatch_alloc, null);
     }
 
     var tile_offsets: vk.Buffer = undefined;
     var tile_offsets_alloc: vma.Allocation = undefined;
     const tile_offsets_num = 30_000;
-    defer vma.destroyBuffer(renderer.ctx.vka, tile_offsets, tile_offsets_alloc);
+    defer vma.destroyBuffer(gfx.ctx.vka, tile_offsets, tile_offsets_alloc);
     {
         const ci: vk.BufferCreateInfo = .{
             .usage = .{ .storage_buffer = true, .shader_device_address = true, .transfer_dst = true },
             .size = @sizeOf(math.UVec2) * tile_offsets_num,
         };
         const aci: vma.AllocationCreateInfo = .{ .usage = .auto };
-        try vma.createBuffer(renderer.ctx.vka, &ci, &aci, &tile_offsets, &tile_offsets_alloc, null);
+        try vma.createBuffer(gfx.ctx.vka, &ci, &aci, &tile_offsets, &tile_offsets_alloc, null);
     }
 
     // const suzanne_pulled = try renderer.loadObj(a_static, &io, "assets/suzanne.obj");
@@ -173,11 +149,11 @@ pub fn main(init: std.process.Init) !void {
     // const icosphere = try renderer.loadGltf(io, gpa, "assets/icosphere/icosphere.gltf");
     // defer renderer.unloadModel(gpa, &icosphere);
 
-    const helm = try renderer.loadGltf(io, gpa, "assets/DamagedHelmet/DamagedHelmet.gltf");
-    defer renderer.unloadModel(gpa, &helm);
+    const helm = try gfx.loadGltf(io, gpa, "assets/DamagedHelmet/DamagedHelmet.gltf");
+    defer gfx.unloadModel(gpa, &helm);
 
-    const sponza = try renderer.loadGltf(io, gpa, "assets/Sponza/Sponza.gltf");
-    defer renderer.unloadModel(gpa, &sponza);
+    const sponza = try gfx.loadGltf(io, gpa, "assets/Sponza/Sponza.gltf");
+    defer gfx.unloadModel(gpa, &sponza);
 
     //FIX: text
     // const quad_size = @sizeOf(f32) * 6 * 4;
@@ -417,10 +393,10 @@ pub fn main(init: std.process.Init) !void {
     // _ = c.FT_Done_FreeType(ft);
 
     var skybox_pipeline: vk.Pipeline = undefined;
-    defer vk.destroyPipeline(renderer.ctx.device, skybox_pipeline, null);
+    defer vk.destroyPipeline(gfx.ctx.device, skybox_pipeline, null);
     {
-        const skybox_module = try getShaderModule(renderer.ctx.device, shaders.skybox);
-        defer vk.destroyShaderModule(renderer.ctx.device, skybox_module, null);
+        const skybox_module = try getShaderModule(gfx.ctx.device, shaders.skybox);
+        defer vk.destroyShaderModule(gfx.ctx.device, skybox_module, null);
         const stages: [2]vk.PipelineShaderStageCreateInfo = .{
             .{ .module = skybox_module, .pName = "main", .stage = .{ .vertex = true } },
             .{ .module = skybox_module, .pName = "main", .stage = .{ .fragment = true } },
@@ -443,16 +419,16 @@ pub fn main(init: std.process.Init) !void {
             .pDepthStencilState = &.{ .depthTestEnable = .True, .depthWriteEnable = .True, .depthCompareOp = .equal },
             .pColorBlendState = &.{ .attachmentCount = 1, .pAttachments = @ptrCast(&blend_attachment) },
             .pDynamicState = &.{ .dynamicStateCount = 2, .pDynamicStates = &.{ .viewport, .scissor } },
-            .layout = renderer.graphics_layout,
+            .layout = gfx.graphics_layout,
         };
-        try vk.createGraphicsPipelines(renderer.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&skybox_pipeline));
+        try vk.createGraphicsPipelines(gfx.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&skybox_pipeline));
     }
 
     var text_pipeline: vk.Pipeline = undefined;
-    defer vk.destroyPipeline(renderer.ctx.device, text_pipeline, null);
+    defer vk.destroyPipeline(gfx.ctx.device, text_pipeline, null);
     {
-        const text_module = try getShaderModule(renderer.ctx.device, shaders.text);
-        defer vk.destroyShaderModule(renderer.ctx.device, text_module, null);
+        const text_module = try getShaderModule(gfx.ctx.device, shaders.text);
+        defer vk.destroyShaderModule(gfx.ctx.device, text_module, null);
         const bind: vk.VertexInputBindingDescription = .{
             .binding = 0,
             .inputRate = .vertex,
@@ -498,16 +474,16 @@ pub fn main(init: std.process.Init) !void {
             .pDepthStencilState = &.{ .depthTestEnable = .True, .depthCompareOp = .always },
             .pColorBlendState = &.{ .attachmentCount = 1, .pAttachments = @ptrCast(&blend_attachment) },
             .pDynamicState = &.{ .dynamicStateCount = 2, .pDynamicStates = &.{ .viewport, .scissor } },
-            .layout = renderer.graphics_layout,
+            .layout = gfx.graphics_layout,
         };
-        try vk.createGraphicsPipelines(renderer.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&text_pipeline));
+        try vk.createGraphicsPipelines(gfx.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&text_pipeline));
     }
 
     var visbuffer_pipeline: vk.Pipeline = undefined;
-    defer vk.destroyPipeline(renderer.ctx.device, visbuffer_pipeline, null);
+    defer vk.destroyPipeline(gfx.ctx.device, visbuffer_pipeline, null);
     {
-        const visbuffer_module = try getShaderModule(renderer.ctx.device, shaders.fill);
-        defer vk.destroyShaderModule(renderer.ctx.device, visbuffer_module, null);
+        const visbuffer_module = try getShaderModule(gfx.ctx.device, shaders.fill);
+        defer vk.destroyShaderModule(gfx.ctx.device, visbuffer_module, null);
         const stages: [2]vk.PipelineShaderStageCreateInfo = .{
             .{ .module = visbuffer_module, .pName = "main", .stage = .{ .vertex = true } },
             .{ .module = visbuffer_module, .pName = "main", .stage = .{ .fragment = true } },
@@ -532,10 +508,10 @@ pub fn main(init: std.process.Init) !void {
             .pDepthStencilState = &.{ .depthTestEnable = .True, .depthCompareOp = .less_or_equal, .depthWriteEnable = .True },
             .pColorBlendState = &.{ .attachmentCount = @intCast(blend_attachments.len), .pAttachments = &blend_attachments },
             .pDynamicState = &.{ .dynamicStateCount = 2, .pDynamicStates = &.{ .viewport, .scissor } },
-            .layout = renderer.graphics_layout,
+            .layout = gfx.graphics_layout,
         };
 
-        try vk.createGraphicsPipelines(renderer.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&visbuffer_pipeline));
+        try vk.createGraphicsPipelines(gfx.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(&visbuffer_pipeline));
     }
 
     const ComputeShaders = enum {
@@ -544,16 +520,16 @@ pub fn main(init: std.process.Init) !void {
     };
     var computes: std.EnumArray(ComputeShaders, vk.Pipeline) = .initUndefined();
     defer for (computes.values) |val| {
-        vk.destroyPipeline(renderer.ctx.device, val, null);
+        vk.destroyPipeline(gfx.ctx.device, val, null);
     };
     inline for (@typeInfo(ComputeShaders).@"enum".field_names) |name| {
-        const module = try getShaderModule(renderer.ctx.device, @field(shaders, name));
-        defer vk.destroyShaderModule(renderer.ctx.device, module, null);
+        const module = try getShaderModule(gfx.ctx.device, @field(shaders, name));
+        defer vk.destroyShaderModule(gfx.ctx.device, module, null);
         const ci: vk.ComputePipelineCreateInfo = .{
-            .layout = renderer.graphics_layout,
+            .layout = gfx.graphics_layout,
             .stage = .{ .stage = .{ .compute = true }, .module = module, .pName = "main" },
         };
-        try vk.createComputePipelines(renderer.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(computes.getPtr(@field(ComputeShaders, name))));
+        try vk.createComputePipelines(gfx.ctx.device, null, 1, @ptrCast(&ci), null, @ptrCast(computes.getPtr(@field(ComputeShaders, name))));
     }
 
     //basic dt and quit
@@ -567,19 +543,18 @@ pub fn main(init: std.process.Init) !void {
     const frametime_goal = 8333;
     var diff_acc: f32 = 0;
 
-    arena_startup.deinit();
     while (!quit) {
         //TODO: dont just retain_capacity
         // _ = arena_frame.reset(.retain_capacity);
 
         const wait_info: vk.SemaphoreWaitInfo = .{
             .semaphoreCount = 1,
-            .pSemaphores = @ptrCast(&renderer.loop.handle),
-            .pValues = &.{renderer.fif_values[renderer.fif_index]},
+            .pSemaphores = @ptrCast(&gfx.loop.handle),
+            .pValues = &.{gfx.fif_values[gfx.fif_index]},
         };
-        try vk.waitSemaphores(renderer.ctx.device, &wait_info, std.math.maxInt(u64));
-        renderer.loop.val += 1;
-        const current_image = try swapchain.acquire(&renderer.ctx, renderer.fif_semaphores[renderer.fif_index]);
+        try vk.waitSemaphores(gfx.ctx.device, &wait_info, std.math.maxInt(u64));
+        gfx.loop.val += 1;
+        const current_image = try swapchain.acquire(&gfx.ctx, gfx.fif_semaphores[gfx.fif_index]);
 
         //reduces input latency or smth
         // try Io.sleep(io, .fromMicroseconds(4000), .real);
@@ -605,16 +580,16 @@ pub fn main(init: std.process.Init) !void {
 
             const keyboard_state = sdl.getKeyboardState(null);
             var in: [4]bool = @splat(false);
-            if (keyboard_state[@intFromEnum(sdl.Scancode.w)]) {
+            if (keyboard_state[@backingInt(sdl.Scancode.w)]) {
                 in[0] = true;
             }
-            if (keyboard_state[@intFromEnum(sdl.Scancode.s)]) {
+            if (keyboard_state[@backingInt(sdl.Scancode.s)]) {
                 in[1] = true;
             }
-            if (keyboard_state[@intFromEnum(sdl.Scancode.d)]) {
+            if (keyboard_state[@backingInt(sdl.Scancode.d)]) {
                 in[2] = true;
             }
-            if (keyboard_state[@intFromEnum(sdl.Scancode.a)]) {
+            if (keyboard_state[@backingInt(sdl.Scancode.a)]) {
                 in[3] = true;
             }
 
@@ -650,14 +625,14 @@ pub fn main(init: std.process.Init) !void {
         const aspect = @as(f32, @floatFromInt(window_extent.width)) / @as(f32, @floatFromInt(window_extent.height));
 
         //FIX: do this properly
-        if (renderer.scene.offset == 2) {
-            renderer.scene.reset();
-            renderer.poses.reset();
-            renderer.offsets.reset();
+        if (gfx.scene.offset == 2) {
+            gfx.scene.reset();
+            gfx.poses.reset();
+            gfx.offsets.reset();
             visbuffer_data.reset();
         }
 
-        renderer.scene.append(.{
+        gfx.scene.append(.{
             .projection = .perspective(cam.fov, aspect, 0.1, 32.0),
             .ortho = .ortho(0.0, @floatFromInt(window_extent.width), 0.0, @floatFromInt(window_extent.height)),
             .cam = cam.pose,
@@ -684,25 +659,25 @@ pub fn main(init: std.process.Init) !void {
         //     poses[i].rot = poses[i].rot.mul(.fromAngleAxis(std.math.pi * 0.5 * dT, lookup[i])).normalize();
         //     mats[i].albedo = handles[i].sampled;
         // }
-        renderer.poses.appendSlice(&@as([25]Pose, @splat(.{})));
+        gfx.poses.appendSlice(&@as([25]zkf.Pose, @splat(.{})));
         // poses[4] = .{ .pos = .{ .x = 0, .y = -4, .z = 0 } };
         // poses_buffer[fif_index].write(0, poses);
         // poses_buffer[fif_index].write(4 * @sizeOf(Pose), .{ .pos = .{ .z = -2 } });
 
         var push: gpu.Push = .{
-            .vertices = renderer.vertices.bda(renderer.ctx.device),
-            .indices = renderer.indices.bda(renderer.ctx.device),
-            .scene = renderer.scene.bda(renderer.ctx.device),
-            .poses = renderer.poses.bda(renderer.ctx.device),
-            .materials = renderer.materials.bda(renderer.ctx.device),
-            .offsets = renderer.offsets.bda(renderer.ctx.device),
-            .material_shader_params = vk.getBufferDeviceAddress(renderer.ctx.device, &.{ .buffer = material_shader_dispatch_params }),
-            .user_buffer = @enumFromInt(0),
-            .tiles = vk.getBufferDeviceAddress(renderer.ctx.device, &.{ .buffer = tile_offsets }),
-            .fif_index = @intCast(renderer.fif_index),
+            .vertices = gfx.vertices.bda(gfx.ctx.device),
+            .indices = gfx.indices.bda(gfx.ctx.device),
+            .scene = gfx.scene.bda(gfx.ctx.device),
+            .poses = gfx.poses.bda(gfx.ctx.device),
+            .materials = gfx.materials.bda(gfx.ctx.device),
+            .offsets = gfx.offsets.bda(gfx.ctx.device),
+            .material_shader_params = vk.getBufferDeviceAddress(gfx.ctx.device, &.{ .buffer = material_shader_dispatch_params }),
+            .user_buffer = @fromBackingInt(@intCast(0)),
+            .tiles = vk.getBufferDeviceAddress(gfx.ctx.device, &.{ .buffer = tile_offsets }),
+            .fif_index = @intCast(gfx.fif_index),
         };
 
-        const cb: vk.CommandBuffer = renderer.cmdbuf[renderer.fif_index];
+        const cb: vk.CommandBuffer = gfx.cmdbuf[gfx.fif_index];
         try vk.resetCommandBuffer(cb, .{});
 
         {
@@ -793,19 +768,19 @@ pub fn main(init: std.process.Init) !void {
                 vk.cmdSetScissor(cb, 0, 1, @ptrCast(&scissor));
 
                 vk.cmdBindPipeline(cb, .graphics, visbuffer_pipeline);
-                vk.cmdBindIndexBuffer(cb, renderer.indices.handle(), 0, .uint32);
-                vk.cmdBindDescriptorSets(cb, .graphics, renderer.graphics_layout, 0, 1, @ptrCast(&renderer.desc_man.set), 0, undefined);
-                vk.cmdPushConstants(cb, renderer.graphics_layout, .{ .compute = true, .vertex = true }, 0, @sizeOf(gpu.Push), @ptrCast(&push));
+                vk.cmdBindIndexBuffer(cb, gfx.indices.handle(), 0, .uint32);
+                vk.cmdBindDescriptorSets(cb, .graphics, gfx.graphics_layout, 0, 1, @ptrCast(&gfx.desc_man.set), 0, undefined);
+                vk.cmdPushConstants(cb, gfx.graphics_layout, .{ .compute = true, .vertex = true }, 0, @sizeOf(gpu.Push), @ptrCast(&push));
 
                 vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Visbuffer Fill" });
 
                 //FIX:
-                renderer.offsets.append(helm.meshes[0].offsets);
+                gfx.offsets.append(helm.meshes[0].offsets);
                 vk.cmdDrawIndexed(cb, helm.meshes[0].offsets.index_count, 1, helm.meshes[0].offsets.start_index, helm.meshes[0].offsets.start_vertex, helm.meshes[0].material);
 
                 //TODO: multiple meshes part of 1 model, how to resolve position then?
                 for (sponza.meshes) |mesh| {
-                    renderer.offsets.append(mesh.offsets);
+                    gfx.offsets.append(mesh.offsets);
                     vk.cmdDrawIndexed(cb, mesh.offsets.index_count, 1, mesh.offsets.start_index, mesh.offsets.start_vertex, mesh.material);
                 }
 
@@ -823,10 +798,10 @@ pub fn main(init: std.process.Init) !void {
 
             vk.cmdBeginDebugUtilsLabelEXT(cb, &.{ .pLabelName = "Per Material Worklist generation" });
             vk.cmdBindPipeline(cb, .compute, computes.get(.worklist));
-            vk.cmdBindDescriptorSets(cb, .compute, renderer.graphics_layout, 0, 1, @ptrCast(&renderer.desc_man.set), 0, undefined);
+            vk.cmdBindDescriptorSets(cb, .compute, gfx.graphics_layout, 0, 1, @ptrCast(&gfx.desc_man.set), 0, undefined);
             visbuffer_data.append(.{ .x = visbuffer_idx, .y = offscreenrender_idx });
-            push.user_buffer = visbuffer_data.bda(renderer.ctx.device);
-            vk.cmdPushConstants(cb, renderer.graphics_layout, .{ .vertex = true, .compute = true }, 0, @sizeOf(gpu.Push), @ptrCast(&push));
+            push.user_buffer = visbuffer_data.bda(gfx.ctx.device);
+            vk.cmdPushConstants(cb, gfx.graphics_layout, .{ .vertex = true, .compute = true }, 0, @sizeOf(gpu.Push), @ptrCast(&push));
 
             vk.cmdClearColorImage(
                 cb,
@@ -943,39 +918,39 @@ pub fn main(init: std.process.Init) !void {
         }
 
         const present_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = swapchain.semaphores[swapchain.index], .stageMask = .{ .blit = true } };
-        const loop_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = renderer.loop.handle, .stageMask = .{}, .value = renderer.loop.val };
+        const loop_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = gfx.loop.handle, .stageMask = .{}, .value = gfx.loop.val };
         const submit_info2: vk.SubmitInfo2 = .{
             .waitSemaphoreInfoCount = 1,
-            .pWaitSemaphoreInfos = &.{.{ .semaphore = renderer.fif_semaphores[renderer.fif_index], .stageMask = .{ .blit = true } }},
+            .pWaitSemaphoreInfos = &.{.{ .semaphore = gfx.fif_semaphores[gfx.fif_index], .stageMask = .{ .blit = true } }},
             .commandBufferInfoCount = 1,
             .pCommandBufferInfos = &.{.{ .commandBuffer = cb }},
             .signalSemaphoreInfoCount = 2,
             .pSignalSemaphoreInfos = &.{ present_signal, loop_signal },
         };
-        try vk.queueSubmit2(renderer.ctx.queue, 1, @ptrCast(&submit_info2), null);
-        renderer.fif_values[renderer.fif_index] = renderer.loop.val;
-        renderer.fif_index = (renderer.fif_index + 1) % Renderer.max_frames;
+        try vk.queueSubmit2(gfx.ctx.queue, 1, @ptrCast(&submit_info2), null);
+        gfx.fif_values[gfx.fif_index] = gfx.loop.val;
+        gfx.fif_index = (gfx.fif_index + 1) % Gfx.max_frames;
 
-        try swapchain.present(&renderer.ctx);
+        try swapchain.present(&gfx.ctx);
 
         if (swapchain.should_recreate) {
             swapchain.should_recreate = false;
             _ = sdl.getWindowSize(window, @ptrCast(&window_extent.width), @ptrCast(&window_extent.height));
 
-            try vk.queueWaitIdle(renderer.ctx.queue);
-            try swapchain.recreate(&renderer.ctx, window_extent);
+            try vk.queueWaitIdle(gfx.ctx.queue);
+            try swapchain.recreate(&gfx.ctx, window_extent);
 
             //FIX can we have a recreate method or smth?
-            renderer.destroyTexture(offscreen_render);
-            offscreen_render = try renderer.createTexture2D(
+            gfx.destroyTexture(offscreen_render);
+            offscreen_render = try gfx.createTexture2D(
                 .r16g16b16a16_unorm,
                 window_extent,
                 .{ .storage = true, .transfer_src = true, .transfer_dst = true },
                 .{ .color = true },
             );
 
-            renderer.destroyTexture(visbuffer);
-            visbuffer = try renderer.createTexture2D(
+            gfx.destroyTexture(visbuffer);
+            visbuffer = try gfx.createTexture2D(
                 .r32_uint,
                 window_extent,
                 .{ .color_attachment = true, .sampled = true },
@@ -983,17 +958,17 @@ pub fn main(init: std.process.Init) !void {
             );
 
             //FIX:
-            visbuffer_idx = renderer.desc_man.appendSampled(renderer.ctx.device, visbuffer.view, .read_only_optimal);
-            offscreenrender_idx = renderer.desc_man.appendStorage(renderer.ctx.device, offscreen_render.view, .general);
+            visbuffer_idx = gfx.desc_man.appendSampled(gfx.ctx.device, visbuffer.view, .read_only_optimal);
+            offscreenrender_idx = gfx.desc_man.appendStorage(gfx.ctx.device, offscreen_render.view, .general);
 
-            renderer.destroyTexture(depth_buffer);
-            depth_buffer = try renderer.createTexture2D(.d32_sfloat, window_extent, .{ .depth_stencil_attachment = true }, .{ .depth = true });
+            gfx.destroyTexture(depth_buffer);
+            depth_buffer = try gfx.createTexture2D(.d32_sfloat, window_extent, .{ .depth_stencil_attachment = true }, .{ .depth = true });
         }
     }
     // arena_frame.deinit();
 
-    try vk.deviceWaitIdle(renderer.ctx.device);
-    const fframe: f32 = @floatFromInt(renderer.loop.val);
+    try vk.deviceWaitIdle(gfx.ctx.device);
+    const fframe: f32 = @floatFromInt(gfx.loop.val);
     log.info("avg_framtime: {}\tavg_diff from {}: {}", .{ frametime_acc / fframe, frametime_goal, diff_acc / fframe });
 }
 

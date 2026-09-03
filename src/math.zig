@@ -17,22 +17,9 @@ pub const Vec4 = extern struct {
     }
 };
 
-pub fn Vec(T: type, len: u32) type {
-    const field_names: []const []const u8 = &.{ "x", "y", "z", "w" };
-    return @Struct(.@"extern", null, field_names[0..len], &@splat(T), &@splat(.{}));
-}
-
-test {
-    const v1: Vec(f32, 3) = .{ .x = 1.0, .y = 2.0, .z = 2.0 };
-    const v2: Vec(f32, 3) = .{ .x = -1.0, .y = -2.0, .z = -2.0 };
-    const v3 = v1.add(v2);
-    std.debug.print("{}", .{v3});
-}
-
 pub const Vec2 = extern struct { x: f32 = 0, y: f32 = 0 };
 pub const IVec2 = extern struct { x: i32 = 0, y: i32 = 0 };
 pub const UVec2 = extern struct { x: u32 = 0, y: u32 = 0 };
-// pub const Vertex = extern struct { pos: Vec3, norm: Vec3, uv: Vec2 };
 pub const Mat4 = extern struct {
     data: [4][4]f32,
 
@@ -122,6 +109,7 @@ pub const Vec3 = extern struct {
         } else return .{};
     }
 };
+
 pub const Quat = extern struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -166,13 +154,3 @@ pub const Pose = extern struct {
     extra: f32 = 1,
     rot: Quat = .identity,
 };
-
-test "sanity check" {
-    const q1: Quat = .fromAngleAxis(std.math.pi / 2.0, .{ .x = 1 });
-    const q2: Quat = .fromAngleAxis(std.math.pi / 4.0, .{ .y = 1 });
-    const q3 = q2.mul(q1);
-
-    const v: Vec3 = .{ .x = 1 };
-    const v2 = v.rotate(q3);
-    _ = v2;
-}

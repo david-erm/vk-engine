@@ -3,7 +3,7 @@ const std = @import("std");
 const vk = @import("vk");
 const vma = @import("../vma.zig");
 
-const root = @import("Renderer.zig");
+const root = @import("gfx.zig");
 
 pub const TimelineSemaphore = struct {
     const tci: vk.SemaphoreTypeCreateInfo = .{ .semaphoreType = .timeline };

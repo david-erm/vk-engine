@@ -3,7 +3,7 @@ const log = std.log.scoped(.renderer);
 
 const vk = @import("vk");
 
-const Context = @import("Renderer.zig").Context;
+const Context = @import("gfx.zig").Context;
 
 const Swapchain = @This();
 

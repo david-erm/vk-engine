@@ -3,8 +3,6 @@ const Io = std.Io;
 const Build = std.Build;
 const log = std.log.scoped(.build);
 
-const materials = @import("src/renderer/materials.zig");
-
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -38,9 +36,6 @@ pub fn build(b: *std.Build) !void {
     const vulkan = b.graph.cwdRelativePath(b.fmt("{s}/include", .{vulkan_sdk}));
     const freetype = b.graph.cwdRelativePath("/usr/include/freetype2");
 
-    //project include
-    const include = b.path("src/include");
-
     //dependecies
     const zgltf = b.dependency("zgltf", .{});
 
@@ -68,7 +63,6 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
-    c.addIncludePath(include);
     c.addSystemIncludePath(freetype);
     c.linkSystemLibrary("freetype", .{});
 
@@ -83,7 +77,6 @@ pub fn build(b: *std.Build) !void {
         ),
     });
     cMod.addIncludePath(vulkan);
-    cMod.addIncludePath(include);
     cMod.linkSystemLibrary("SDL3", .{});
     cMod.linkSystemLibrary("ktx", .{});
 
@@ -246,7 +239,6 @@ pub fn compileShaders(
 
         slangc.addArg("-depfile");
         _ = slangc.addDepFileOutputArg(b.fmt("{s}.d", .{filename}));
-
         slangc.addArgs(&.{ "-target", "spirv", "-o" });
         const spirv = slangc.addOutputFileArg(b.fmt("{s}.spv", .{filename}));
 
