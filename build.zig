@@ -1,18 +1,22 @@
 const std = @import("std");
+const zon = @import("build.zig.zon");
+const version = std.SemanticVersion.parse(zon.version) catch unreachable;
+
 const Io = std.Io;
 const Build = std.Build;
 const log = std.log.scoped(.build);
 
-pub fn build(b: *std.Build) !void {
+pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const bake_optimize = b.option(std.builtin.OptimizeMode, "bake-optimize", "Optimization level for bake step binaries") orelse .fast;
 
     const vulkan_sdk = b.graph.environ_map.get("VULKAN_SDK") orelse {
         log.err("Could not find VulkanSDK. Try sourcing setup-env.sh", .{});
-        return error.NoVulkanSDK;
+        @panic("");
     };
     log.info("VulkanSDK at: {s}", .{vulkan_sdk});
+    log.info("Building version: {f}", .{version});
 
     //vulkan binds
     const instance_extensions: []const [:0]const u8 = &.{
@@ -34,7 +38,6 @@ pub fn build(b: *std.Build) !void {
 
     //system includes
     const vulkan = b.graph.cwdRelativePath(b.fmt("{s}/include", .{vulkan_sdk}));
-    const freetype = b.graph.cwdRelativePath("/usr/include/freetype2");
 
     //dependecies
     const zgltf = b.dependency("zgltf", .{});
@@ -55,16 +58,10 @@ pub fn build(b: *std.Build) !void {
     buildBake(b, bake_optimize, ktx);
 
     const c = b.addTranslateC(.{
-        .root_source_file = b.addWriteFiles().add("c.h",
-            \\#include <ft2build.h>
-            \\#define FT_FREETYPE_H
-            \\#include <freetype/freetype.h>
-        ),
+        .root_source_file = b.addWriteFiles().add("c.h", ""),
         .target = target,
         .optimize = optimize,
     });
-    c.addSystemIncludePath(freetype);
-    c.linkSystemLibrary("freetype", .{});
 
     const cMod = c.createModule();
     cMod.link_libcpp = true;
@@ -80,7 +77,7 @@ pub fn build(b: *std.Build) !void {
     cMod.linkSystemLibrary("SDL3", .{});
     cMod.linkSystemLibrary("ktx", .{});
 
-    const shaders = try compileShaders(b, vk, target, optimize, &.{
+    const shaders = compileShaders(b, vk, target, optimize, &.{
         "src/shaders/skybox.slang",
         "src/shaders/text.slang",
         "src/shaders/visbuffer/fill.slang",
@@ -89,7 +86,7 @@ pub fn build(b: *std.Build) !void {
     });
 
     const exe = b.addExecutable(.{
-        .name = "howtovulkan",
+        .name = @tagName(zon.name),
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -204,7 +201,7 @@ pub fn compileShaders(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     paths: []const []const u8,
-) !*std.Build.Module {
+) *std.Build.Module {
     // TODO:
     const reflect_gen = b.addExecutable(.{
         .name = "shader_reflection",
@@ -257,7 +254,7 @@ pub fn compileShaders(
             .optimize = optimize,
         });
 
-        try shaders_source.appendSlice(b.allocator, b.fmt("pub const {s} = @import(\"{s}\");\n", .{ filename, filename }));
+        shaders_source.appendSlice(b.allocator, b.fmt("pub const {s} = @import(\"{s}\");\n", .{ filename, filename })) catch @panic("OOM");
     }
 
     shaders.root_source_file = b.addWriteFiles().add("shaders.zig", shaders_source.items);

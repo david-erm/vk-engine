@@ -26,9 +26,9 @@ pub const Context = struct {
 
         const app_info: vk.ApplicationInfo = .{
             .apiVersion = vk.makeApiVersion(0, 1, 3, 0),
-            .pApplicationName = "howtovulkna",
+            .pApplicationName = "test",
             .applicationVersion = vk.makeApiVersion(0, 1, 0, 0),
-            .pEngineName = "zkf",
+            .pEngineName = "vk-engine",
             .engineVersion = vk.makeApiVersion(0, 1, 0, 0),
         };
         try vk.createInstance(&.{

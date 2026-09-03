@@ -1,5 +1,5 @@
 const std = @import("std");
-const log = std.log.scoped(.renderer);
+const log = std.log.scoped(.gfx);
 
 const vk = @import("vk");
 

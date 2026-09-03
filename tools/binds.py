@@ -347,7 +347,7 @@ def parse_type(type):
 
     ret = ""
 
-    if type.pointer:
+    if type.pointer and type.name not in vk.funcPointers:
         if type.name.startswith("pp"):
             ret += "?[*]const "
         if type.optional or type.optionalPointer:

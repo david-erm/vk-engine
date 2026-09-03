@@ -307,9 +307,6 @@ pub fn main(init: std.process.Init) !void {
     var diff_acc: f32 = 0;
 
     while (!quit) {
-        //TODO: dont just retain_capacity
-        // _ = arena_frame.reset(.retain_capacity);
-
         const wait_info: vk.SemaphoreWaitInfo = .{
             .semaphoreCount = 1,
             .pSemaphores = @ptrCast(&gfx.loop.handle),
@@ -522,7 +519,7 @@ pub fn main(init: std.process.Init) !void {
                 defer vk.cmdEndRendering(cb);
                 const vp: vk.Viewport = .{
                     .width = @floatFromInt(window_extent.width),
-                    .height = @floatFromInt(window_extent.height),
+                    .height = @as(f32, @floatFromInt(window_extent.height)),
                     .maxDepth = 1.0,
                     .minDepth = 0.0,
                 };

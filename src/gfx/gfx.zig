@@ -1,9 +1,8 @@
 const std = @import("std");
+const log = std.log.scoped(.gfx);
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const MemoryPool = std.heap.memory_pool.Extra;
-
-const log = std.log.scoped(.Renderer);
 
 const Gltf = @import("zgltf").Gltf;
 pub const c = @import("c");
@@ -26,7 +25,7 @@ const Buffer = buffers.Buffer;
 
 const vk_extensions = @import("vk_extensions");
 
-const Renderer = @This();
+const Gfx = @This();
 
 // LIMITS
 pub const max_frames = 2;
@@ -81,34 +80,34 @@ scene: buffers.GpuMappedPush(st.Scene),
 //transfer
 upload: buffers.TimelineSemaphore,
 
-pub fn deinit(renderer: *Renderer, gpa: std.mem.Allocator) void {
-    renderer.materials.deinit(renderer.ctx.vka);
-    renderer.offsets.deinit(renderer.ctx.vka);
-    renderer.poses.deinit(renderer.ctx.vka);
-    renderer.scene.deinit(renderer.ctx.vka);
+pub fn deinit(gfx: *Gfx, gpa: std.mem.Allocator) void {
+    gfx.materials.deinit(gfx.ctx.vka);
+    gfx.offsets.deinit(gfx.ctx.vka);
+    gfx.poses.deinit(gfx.ctx.vka);
+    gfx.scene.deinit(gfx.ctx.vka);
 
-    for (renderer.fif_semaphores) |smp| {
-        vk.destroySemaphore(renderer.ctx.device, smp, null);
+    for (gfx.fif_semaphores) |smp| {
+        vk.destroySemaphore(gfx.ctx.device, smp, null);
     }
-    renderer.loop.deinit(renderer.ctx.device);
-    renderer.upload.deinit(renderer.ctx.device);
+    gfx.loop.deinit(gfx.ctx.device);
+    gfx.upload.deinit(gfx.ctx.device);
 
-    renderer.vertices.deinit(renderer.ctx.vka);
-    renderer.indices.deinit(renderer.ctx.vka);
+    gfx.vertices.deinit(gfx.ctx.vka);
+    gfx.indices.deinit(gfx.ctx.vka);
 
-    vk.destroyPipelineLayout(renderer.ctx.device, renderer.graphics_layout, null);
-    renderer.desc_man.deinit(renderer.ctx.device);
+    vk.destroyPipelineLayout(gfx.ctx.device, gfx.graphics_layout, null);
+    gfx.desc_man.deinit(gfx.ctx.device);
 
-    renderer.images.deinit(gpa);
+    gfx.images.deinit(gpa);
 
-    vk.destroyCommandPool(renderer.ctx.device, renderer.cp, null);
-    renderer.ctx.deinit();
+    vk.destroyCommandPool(gfx.ctx.device, gfx.cp, null);
+    gfx.ctx.deinit();
     sdl.vulkan.unloadLibrary();
     sdl.quitSubsystem(.{ .video = true });
 }
 
-pub fn init(gpa: std.mem.Allocator) !Renderer {
-    var out: Renderer = undefined;
+pub fn init(gpa: std.mem.Allocator) !Gfx {
+    var out: Gfx = undefined;
     try sdl.init(.{ .video = true });
     try sdl.vulkan.loadLibrary(null);
 
@@ -178,25 +177,25 @@ pub fn init(gpa: std.mem.Allocator) !Renderer {
     return out;
 }
 
-pub fn loadTextureFromFile(renderer: *Renderer, gpa: std.mem.Allocator, filename: [:0]const u8) !*ImageR {
+pub fn loadTextureFromFile(gfx: *Gfx, gpa: std.mem.Allocator, filename: [:0]const u8) !*ImageR {
     log.debug("attempting to open {q}", .{filename});
     var texture: *ktx.Texture = try .fromNamedFile(filename.ptr, .{ .load_image_data_bit = true });
     defer texture.destroy();
-    return loadTexture(renderer, gpa, texture);
+    return loadTexture(gfx, gpa, texture);
 }
 
-pub fn loadTextureFromMemory(renderer: *Renderer, gpa: std.mem.Allocator, memory: []const u8) !*ImageR {
+pub fn loadTextureFromMemory(gfx: *Gfx, gpa: std.mem.Allocator, memory: []const u8) !*ImageR {
     var texture: *ktx.Texture = try .fromMemory(memory, .{ .load_image_data_bit = true });
     defer texture.destroy();
-    return loadTexture(renderer, gpa, texture);
+    return loadTexture(gfx, gpa, texture);
 }
 
-pub fn loadTexture(renderer: *Renderer, gpa: std.mem.Allocator, texture: *ktx.Texture) !*ImageR {
-    const format: vk.Format = @enumFromInt(texture.getVkFormat());
+pub fn loadTexture(gfx: *Gfx, gpa: std.mem.Allocator, texture: *ktx.Texture) !*ImageR {
+    const format: vk.Format = @fromBackingInt(@intCast(texture.getVkFormat()));
 
     var image_ci: vk.ImageCreateInfo = .{
         .arrayLayers = texture.numLayers,
-        .imageType = @enumFromInt(texture.numDimensions - 1),
+        .imageType = @fromBackingInt(@intCast(texture.numDimensions - 1)),
         .format = format,
         .extent = .{ .width = texture.baseWidth, .height = texture.baseHeight, .depth = texture.baseDepth },
         .mipLevels = texture.numLevels,
@@ -221,18 +220,18 @@ pub fn loadTexture(renderer: *Renderer, gpa: std.mem.Allocator, texture: *ktx.Te
         view_ci.viewType = .cube;
     } else view_ci.viewType = .@"2d";
 
-    const image = try renderer.createTexture(&image_ci, &view_ci);
-    errdefer renderer.destroyTexture(image);
+    const image = try gfx.createTexture(&image_ci, &view_ci);
+    errdefer gfx.destroyTexture(image);
 
     //transfer
 
-    const img_buffer: buffers.GpuMapped(u8) = try .init(renderer.ctx.vka, &.{ .size = texture.dataSize, .usage = .{ .transfer_src = true } });
-    defer img_buffer.deinit(renderer.ctx.vka);
+    const img_buffer: buffers.GpuMapped(u8) = try .init(gfx.ctx.vka, &.{ .size = texture.dataSize, .usage = .{ .transfer_src = true } });
+    defer img_buffer.deinit(gfx.ctx.vka);
     @memcpy(img_buffer.data, texture.pData[0..texture.dataSize]);
 
     const cmd_binfo: vk.CommandBufferBeginInfo = .{ .flags = .{ .one_time_submit = true } };
-    try vk.resetCommandBuffer(renderer.transfer_cmdbuf, .{});
-    try vk.beginCommandBuffer(renderer.transfer_cmdbuf, &cmd_binfo);
+    try vk.resetCommandBuffer(gfx.transfer_cmdbuf, .{});
+    try vk.beginCommandBuffer(gfx.transfer_cmdbuf, &cmd_binfo);
 
     const mem_barrier: vk.ImageMemoryBarrier2 = .{
         .dstStageMask = .{ .copy = true },
@@ -250,7 +249,7 @@ pub fn loadTexture(renderer: *Renderer, gpa: std.mem.Allocator, texture: *ktx.Te
         .imageMemoryBarrierCount = 1,
         .pImageMemoryBarriers = @ptrCast(&mem_barrier),
     };
-    vk.cmdPipelineBarrier2(renderer.transfer_cmdbuf, &barrier_texinfo);
+    vk.cmdPipelineBarrier2(gfx.transfer_cmdbuf, &barrier_texinfo);
 
     const copy_regions = try gpa.alloc(vk.BufferImageCopy, texture.numLevels * image_ci.arrayLayers);
     defer gpa.free(copy_regions);
@@ -274,7 +273,7 @@ pub fn loadTexture(renderer: *Renderer, gpa: std.mem.Allocator, texture: *ktx.Te
             };
         }
     }
-    vk.cmdCopyBufferToImage(renderer.transfer_cmdbuf, img_buffer.handle, image.handle, .transfer_dst_optimal, @intCast(copy_regions.len), copy_regions.ptr);
+    vk.cmdCopyBufferToImage(gfx.transfer_cmdbuf, img_buffer.handle, image.handle, .transfer_dst_optimal, @intCast(copy_regions.len), copy_regions.ptr);
 
     const barrier: vk.ImageMemoryBarrier2 = .{
         .srcStageMask = .{ .copy = true },
@@ -291,26 +290,26 @@ pub fn loadTexture(renderer: *Renderer, gpa: std.mem.Allocator, texture: *ktx.Te
         },
     };
     barrier_texinfo.pImageMemoryBarriers = @ptrCast(&barrier);
-    vk.cmdPipelineBarrier2(renderer.transfer_cmdbuf, &barrier_texinfo);
+    vk.cmdPipelineBarrier2(gfx.transfer_cmdbuf, &barrier_texinfo);
 
-    try vk.endCommandBuffer(renderer.transfer_cmdbuf);
+    try vk.endCommandBuffer(gfx.transfer_cmdbuf);
 
-    renderer.upload.val += 1;
-    const upload_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = renderer.upload.handle, .value = renderer.upload.val };
+    gfx.upload.val += 1;
+    const upload_signal: vk.SemaphoreSubmitInfo = .{ .semaphore = gfx.upload.handle, .value = gfx.upload.val };
     const sub_info: vk.SubmitInfo2 = .{
         .commandBufferInfoCount = 1,
-        .pCommandBufferInfos = &.{.{ .commandBuffer = renderer.transfer_cmdbuf }},
+        .pCommandBufferInfos = &.{.{ .commandBuffer = gfx.transfer_cmdbuf }},
         .signalSemaphoreInfoCount = 1,
         .pSignalSemaphoreInfos = &.{upload_signal},
     };
-    try vk.queueSubmit2(renderer.ctx.queue, 1, @ptrCast(&sub_info), null);
+    try vk.queueSubmit2(gfx.ctx.queue, 1, @ptrCast(&sub_info), null);
 
     const waiti: vk.SemaphoreWaitInfo = .{
         .semaphoreCount = 1,
-        .pValues = &.{renderer.upload.val},
-        .pSemaphores = &.{renderer.upload.handle},
+        .pValues = &.{gfx.upload.val},
+        .pSemaphores = &.{gfx.upload.handle},
     };
-    try vk.waitSemaphores(renderer.ctx.device, &waiti, std.math.maxInt(u64));
+    try vk.waitSemaphores(gfx.ctx.device, &waiti, std.math.maxInt(u64));
 
     return image;
 }
@@ -325,62 +324,62 @@ pub const Model = struct {
     meshes: []Mesh,
 };
 
-pub fn unloadModel(renderer: *Renderer, gpa: Allocator, model: *const Model) void {
+pub fn unloadModel(gfx: *Gfx, gpa: Allocator, model: *const Model) void {
     for (model.images) |image| {
-        renderer.destroyTexture(image);
+        gfx.destroyTexture(image);
     }
     gpa.free(model.images);
     gpa.free(model.meshes);
 }
 
-fn thing(renderer: *Renderer, io: Io, gpa: Allocator, gltf: *Gltf, dir: Io.Dir, info: anytype) !*ImageR {
+fn thing(gfx: *Gfx, io: Io, gpa: Allocator, gltf: *Gltf, dir: Io.Dir, info: anytype) !*ImageR {
     const image_path = gltf.data.images[info.index].uri.?;
     log.debug("Loading {q}", .{image_path});
     const file = try dir.readFileAlloc(io, image_path, gpa, .unlimited);
     defer gpa.free(file);
-    return renderer.loadTextureFromMemory(gpa, file);
+    return gfx.loadTextureFromMemory(gpa, file);
 }
 
-fn proccessMaterial(renderer: *Renderer, io: Io, gpa: Allocator, gltf: *Gltf, dir: Io.Dir, material: Gltf.Material, images: *std.ArrayList(*ImageR)) !u32 {
+fn proccessMaterial(gfx: *Gfx, io: Io, gpa: Allocator, gltf: *Gltf, dir: Io.Dir, material: Gltf.Material, images: *std.ArrayList(*ImageR)) !u32 {
     var mat: st.Material = .{};
 
     const albedo = material.metallic_roughness.base_color_texture;
     if (albedo) |info| {
-        const image = try renderer.thing(io, gpa, gltf, dir, info);
-        mat.albedo = renderer.desc_man.appendSampled(renderer.ctx.device, image.view, .read_only_optimal);
+        const image = try gfx.thing(io, gpa, gltf, dir, info);
+        mat.albedo = gfx.desc_man.appendSampled(gfx.ctx.device, image.view, .read_only_optimal);
         try images.append(gpa, image);
     }
     const metrou = material.metallic_roughness.metallic_roughness_texture;
     if (metrou) |info| {
-        const image = try renderer.thing(io, gpa, gltf, dir, info);
-        mat.metallic_roughness = renderer.desc_man.appendSampled(renderer.ctx.device, image.view, .read_only_optimal);
+        const image = try gfx.thing(io, gpa, gltf, dir, info);
+        mat.metallic_roughness = gfx.desc_man.appendSampled(gfx.ctx.device, image.view, .read_only_optimal);
         try images.append(gpa, image);
     }
     const normal = material.normal_texture;
     if (normal) |info| {
-        const image = try renderer.thing(io, gpa, gltf, dir, info);
-        mat.normal = renderer.desc_man.appendSampled(renderer.ctx.device, image.view, .read_only_optimal);
+        const image = try gfx.thing(io, gpa, gltf, dir, info);
+        mat.normal = gfx.desc_man.appendSampled(gfx.ctx.device, image.view, .read_only_optimal);
         try images.append(gpa, image);
     }
     const emissive = material.emissive_texture;
     if (emissive) |info| {
-        const image = try renderer.thing(io, gpa, gltf, dir, info);
-        mat.emissive = renderer.desc_man.appendSampled(renderer.ctx.device, image.view, .read_only_optimal);
+        const image = try gfx.thing(io, gpa, gltf, dir, info);
+        mat.emissive = gfx.desc_man.appendSampled(gfx.ctx.device, image.view, .read_only_optimal);
         try images.append(gpa, image);
     }
     const ao = material.occlusion_texture;
     if (ao) |info| {
-        const image = try renderer.thing(io, gpa, gltf, dir, info);
-        mat.occlusion = renderer.desc_man.appendSampled(renderer.ctx.device, image.view, .read_only_optimal);
+        const image = try gfx.thing(io, gpa, gltf, dir, info);
+        mat.occlusion = gfx.desc_man.appendSampled(gfx.ctx.device, image.view, .read_only_optimal);
         try images.append(gpa, image);
     }
-    const index = renderer.materials.offset;
-    renderer.materials.append(mat);
+    const index = gfx.materials.offset;
+    gfx.materials.append(mat);
 
     return @intCast(index);
 }
 
-pub fn loadGltf(renderer: *Renderer, io: Io, gpa: Allocator, path: []const u8) !Model {
+pub fn loadGltf(gfx: *Gfx, io: Io, gpa: Allocator, path: []const u8) !Model {
     log.debug("Loading {q}", .{path});
     var out: Model = undefined;
 
@@ -415,15 +414,15 @@ pub fn loadGltf(renderer: *Renderer, io: Io, gpa: Allocator, path: []const u8) !
         const mesh = gltf.data.meshes[mesh_idx];
 
         for (mesh.primitives) |primitive| {
-            const start_index: u32 = @intCast(renderer.indices.offset);
-            const start_vertex: i32 = @intCast(renderer.vertices.offset);
+            const start_index: u32 = @intCast(gfx.indices.offset);
+            const start_vertex: i32 = @intCast(gfx.vertices.offset);
 
             const indices = gltf.data.accessors[primitive.indices orelse return error.NoIndices];
             const index_count: u32 = @intCast(indices.count);
 
             const material = gltf.data.materials[primitive.material orelse return error.NoMaterial];
 
-            const mat_id = try renderer.proccessMaterial(io, gpa, &gltf, dir, material, &images);
+            const mat_id = try gfx.proccessMaterial(io, gpa, &gltf, dir, material, &images);
 
             try meshes.append(gpa, .{
                 .offsets = .{
@@ -436,7 +435,7 @@ pub fn loadGltf(renderer: *Renderer, io: Io, gpa: Allocator, path: []const u8) !
 
             var indices_it = indices.iterator(IndexType, &gltf, bins[gltf.data.buffer_views[indices.buffer_view.?].buffer]);
             while (indices_it.next()) |val| {
-                renderer.indices.appendSlice(val);
+                gfx.indices.appendSlice(val);
             }
 
             var positions: Gltf.Accessor = undefined;
@@ -467,7 +466,7 @@ pub fn loadGltf(renderer: *Renderer, io: Io, gpa: Allocator, path: []const u8) !
                     .uv = tex.*,
                 };
 
-                renderer.vertices.append(w);
+                gfx.vertices.append(w);
             }
         }
     }
@@ -478,7 +477,7 @@ pub fn loadGltf(renderer: *Renderer, io: Io, gpa: Allocator, path: []const u8) !
     return out;
 }
 
-pub fn addMesh(manager: *Renderer, indices: []const IndexType, vertices: []const st.Vertex) Mesh {
+pub fn addMesh(manager: *Gfx, indices: []const IndexType, vertices: []const st.Vertex) Mesh {
     const mesh: Mesh = .{
         .start_vertex = @intCast(manager.vert_offset / @sizeOf(st.Vertex)),
         .start_index = @intCast(manager.idx_offset / @sizeOf(IndexType)),
@@ -493,7 +492,7 @@ pub fn addMesh(manager: *Renderer, indices: []const IndexType, vertices: []const
 }
 
 //TODO:
-pub fn transferToImage(manager: *Renderer, target: ImageHandle, buffer: vk.Buffer, regions: []vk.BufferImageCopy, level_count: u32, layer_count: u32) void {
+pub fn transferToImage(manager: *Gfx, target: ImageHandle, buffer: vk.Buffer, regions: []vk.BufferImageCopy, level_count: u32, layer_count: u32) void {
     const image = manager.getImage(target);
 
     const transfer_start_barrier: vk.ImageMemoryBarrier2 = .{
@@ -531,25 +530,25 @@ pub fn transferToImage(manager: *Renderer, target: ImageHandle, buffer: vk.Buffe
 }
 
 /// sets image and format fields on image view
-pub fn createTexture(renderer: *Renderer, ci: *const vk.ImageCreateInfo, vci: *vk.ImageViewCreateInfo) !*ImageR {
+pub fn createTexture(gfx: *Gfx, ci: *const vk.ImageCreateInfo, vci: *vk.ImageViewCreateInfo) !*ImageR {
     //TODO: errdefer all the things
-    const image = try renderer.images.create(undefined);
-    try vma.createImage(renderer.ctx.vka, ci, &.{ .usage = .auto }, &image.handle, &image.allocation, null);
+    const image = try gfx.images.create(undefined);
+    try vma.createImage(gfx.ctx.vka, ci, &.{ .usage = .auto }, &image.handle, &image.allocation, null);
 
     vci.image = image.handle;
     vci.format = ci.format;
-    try vk.createImageView(renderer.ctx.device, vci, null, &image.view);
+    try vk.createImageView(gfx.ctx.device, vci, null, &image.view);
 
     return image;
 }
 
-pub fn destroyTexture(renderer: *Renderer, image: *ImageR) void {
-    vk.destroyImageView(renderer.ctx.device, image.view, null);
-    vma.destroyImage(renderer.ctx.vka, image.handle, image.allocation);
-    renderer.images.destroy(image);
+pub fn destroyTexture(gfx: *Gfx, image: *ImageR) void {
+    vk.destroyImageView(gfx.ctx.device, image.view, null);
+    vma.destroyImage(gfx.ctx.vka, image.handle, image.allocation);
+    gfx.images.destroy(image);
 }
 
-pub fn createTexture2D(renderer: *Renderer, format: vk.Format, extent: vk.Extent2D, usage: vk.ImageUsageFlags, aspect_mask: vk.ImageAspectFlags) !*ImageR {
+pub fn createTexture2D(gfx: *Gfx, format: vk.Format, extent: vk.Extent2D, usage: vk.ImageUsageFlags, aspect_mask: vk.ImageAspectFlags) !*ImageR {
     const ci: vk.ImageCreateInfo = .{
         .imageType = .@"2d",
         .samples = .{ .@"1" = true },
@@ -570,5 +569,5 @@ pub fn createTexture2D(renderer: *Renderer, format: vk.Format, extent: vk.Extent
         },
     };
 
-    return renderer.createTexture(&ci, &vci);
+    return gfx.createTexture(&ci, &vci);
 }

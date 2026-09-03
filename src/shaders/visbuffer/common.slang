@@ -145,9 +145,9 @@ BarycentricDeriv CalcFullBary(float4 pt0, float4 pt1, float4 pt2, float2 pixel_n
     ddx_sum *= (2.0/win_size.x);
     ddy_sum *= (2.0/win_size.y);
 
-    //NOTE: We are on vulkan, so y is flipped. Leaving this here for sanity
-    // ret.ddy *= -1.0;
-    // ddy_sum *= -1.0;
+    // NOTE: We are on vulkan, so y is flipped. Leaving this here for sanity
+     // ret.ddy *= -1.0;
+     // ddy_sum *= -1.0;
 
     const float interW_ddx = 1.0 / (interp_invw + ddx_sum);
     const float interW_ddy = 1.0 / (interp_invw + ddy_sum);

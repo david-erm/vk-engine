@@ -22,6 +22,8 @@
 - Vma virtual allocators for meshes
 
 # GOAL:
+DO THIS FIRST!!
+- Static renderer that loads scenes from configuration file
 - start making abstractions
 - lets do aimtrainer (hopefully builds into somee wildwest type shi)
 

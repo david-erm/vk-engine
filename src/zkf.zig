@@ -14,17 +14,6 @@ pub const Pose = math.Pose;
 
 const log = std.log.scoped(.howtovulkan);
 
-pub fn makeError(err: type, ret: anytype) err!void {
-    switch (ret) {
-        @fromBackingInt(@intCast(0)) => {
-            return;
-        },
-        inline else => |t| {
-            return @field(err, @tagName(t));
-        },
-    }
-}
-
 pub const Camera = struct {
     const pitch_limit = std.math.pi / 2.0 - 0.1;
 

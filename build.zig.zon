@@ -1,8 +1,7 @@
 .{
-    .name = .howtovulkan,
-    // This is a [Semantic Version](https://semver.org/).
-    .version = "0.1.0",
-    .fingerprint = 0x6f8d6fb63813e7ea, // Changing this has security and trust implications.
+    .name = .vk_engine,
+    .version = "0.0.1-alpha",
+    .fingerprint = 0x64c6306cb758c15a, // Changing this has security and trust implications.
     .dependencies = .{
         .zgltf = .{
             .url = "git+https://github.com/kooparse/zgltf#ec52d477db346af99d4cdced4e35e67e1670023f",
