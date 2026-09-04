@@ -62,6 +62,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    c.addIncludePath(vulkan);
 
     const cMod = c.createModule();
     cMod.link_libcpp = true;

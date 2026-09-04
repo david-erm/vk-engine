@@ -6,10 +6,10 @@ const vk = @import("vk");
 const shaders = @import("shaders");
 const c = @import("c");
 
-const vma = @import("vma.zig");
-const zkf = @import("zkf.zig");
-const sdl = @import("sdl.zig");
-const math = @import("math.zig");
+const vma = @import("gfx/vma.zig");
+const zkf = @import("gfx/zkf.zig");
+const sdl = @import("gfx/sdl.zig");
+const math = @import("com/math.zig");
 
 const gpu = @import("gfx/structs.zig");
 const bufs = @import("gfx/buffers.zig");
@@ -726,22 +726,8 @@ pub fn main(init: std.process.Init) !void {
             depth_buffer = try gfx.createTexture2D(.d32_sfloat, window_extent, .{ .depth_stencil_attachment = true }, .{ .depth = true });
         }
     }
-    // arena_frame.deinit();
 
     try vk.deviceWaitIdle(gfx.ctx.device);
     const fframe: f32 = @floatFromInt(gfx.loop.val);
     log.info("avg_framtime: {}\tavg_diff from {}: {}", .{ frametime_acc / fframe, frametime_goal, diff_acc / fframe });
 }
-
-const quad_indices: [6]u32 = .{
-    0, 1, 2,
-    2, 3, 0,
-};
-
-const plane_vertices: [32]f32 = .{
-    //pos              u    norm           v
-    -10.0, 2.0, 10.0,  0.0, 0.0, 1.0, 0.0, 1.0,
-    10.0,  2.0, 10.0,  1.0, 0.0, 1.0, 0.0, 1.0,
-    10.0,  2.0, -10.0, 1.0, 0.0, 1.0, 0.0, 0.0,
-    -10.0, 2.0, -10.0, 0.0, 0.0, 1.0, 0.0, 0.0,
-};

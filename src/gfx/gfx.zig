@@ -9,11 +9,11 @@ pub const c = @import("c");
 const vk = @import("vk");
 
 //root
-const ktx = @import("../ktx.zig");
-const sdl = @import("../sdl.zig");
-const vma = @import("../vma.zig");
-const zkf = @import("../zkf.zig");
-const math = @import("../math.zig");
+const ktx = @import("ktx.zig");
+const sdl = @import("sdl.zig");
+const vma = @import("vma.zig");
+const zkf = @import("zkf.zig");
+const math = @import("../com/math.zig");
 
 //render
 pub const Context = @import("VkContext.zig").Context;

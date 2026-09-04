@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const vk = @import("vk");
-const vma = @import("../vma.zig");
+const vma = @import("vma.zig");
 
 const root = @import("gfx.zig");
 

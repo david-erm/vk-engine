@@ -1,7 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 
-const math = @import("math.zig");
+const math = @import("../com/math.zig");
 
 pub const Vec3 = math.Vec3;
 pub const Quat = math.Quat;

@@ -3,7 +3,7 @@ const log = std.log.scoped(.vkcontext);
 
 const vk = @import("vk");
 //NOTE: vma considered vk context for now, could decomple this as well
-const vma = @import("../vma.zig");
+const vma = @import("vma.zig");
 
 //NOTE: Multiple queues might be needed, will need to change this if so
 pub const Context = struct {
@@ -103,17 +103,21 @@ pub const Context = struct {
         vk.loadDevice(ctx.device);
         vk.getDeviceQueue(ctx.device, ctx.qfamily, 0, &ctx.queue);
 
+        const ptr = vk.table.instance.vkGetInstanceProcAddr(ctx.instance, "vkGetPhysicalDeviceProperties2KHR");
+        log.debug("{x}", .{@intFromPtr(ptr)});
         const vkFuncs: vma.VulkanFunctions = .{
             .vkGetInstanceProcAddr = vk.table.instance.vkGetInstanceProcAddr,
             .vkGetDeviceProcAddr = vk.table.device.vkGetDeviceProcAddr,
         };
-        try vma.createAllocator(&.{
-            .flags = .{ .BufferDeviceAddressBit = 1 },
-            .physicalDevice = ctx.pdevice,
-            .device = ctx.device,
-            .pVulkanFunctions = &vkFuncs,
+        const vma_ci: vma.AllocatorCreateInfo = .{
             .instance = ctx.instance,
-        }, &ctx.vka);
+            .device = ctx.device,
+            .physicalDevice = ctx.pdevice,
+            .flags = .{ .BufferDeviceAddressBit = 1 },
+            .pVulkanFunctions = &vkFuncs,
+            .vulkanApiVersion = vk.makeApiVersion(0, 1, 3, 0),
+        };
+        try vma.createAllocator(&vma_ci, &ctx.vka);
 
         return ctx;
     }

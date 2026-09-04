@@ -1,6 +1,6 @@
 //NOTE: This has to be maintained in sync with src/shaders/structs.slang
 //TODO: maybe gen that file from this?
-const math = @import("../math.zig");
+const math = @import("../com/math.zig");
 const vk = @import("vk");
 
 const Vec3 = math.Vec3;
