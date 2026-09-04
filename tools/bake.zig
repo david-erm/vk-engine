@@ -37,9 +37,7 @@ pub fn main(init: std.process.Init) !void {
             c.aiProcess_ValidateDataStructure |
             c.aiProcess_FindDegenerates |
             c.aiProcess_FindInvalidData |
-            c.aiProcess_FindInstances |
-            c.aiProcess_FlipWindingOrder,
-        // c.aiProcess_FlipUVs,
+            c.aiProcess_FindInstances,
     ) orelse {
         log.err("{s}", .{c.aiGetErrorString()});
         return error.Assimp;

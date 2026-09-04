@@ -321,7 +321,7 @@ pub fn main(init: std.process.Init) !void {
 
         const elasped: f32 = @floatFromInt(Io.Clock.now(.real, io).toMicroseconds() - last_time);
         last_time = Io.Clock.now(.real, io).toMicroseconds();
-        const flast: f64 = @as(f64, @floatFromInt(last_time)) / 1_000_000;
+        // const flast: f64 = @as(f64, @floatFromInt(last_time)) / 1_000_000;
         const dT = elasped / 1_000_000.0;
 
         frametime_acc += elasped;
@@ -397,8 +397,9 @@ pub fn main(init: std.process.Init) !void {
             .ortho = .ortho(0.0, @floatFromInt(window_extent.width), 0.0, @floatFromInt(window_extent.height)),
             .cam = cam.pose,
             .light_pos = .{
-                .x = @as(f32, @floatCast(@sin(std.math.pi * flast * 0.25))) * 4.0,
-                .y = @as(f32, @floatCast(@sin(std.math.pi * flast * 0.125))) * 4.0 - 4,
+                .x = 0.0,
+                .y = 5.0,
+                .z = 0.0,
             },
             .dimensions = .{ .x = window_extent.width, .y = window_extent.height },
             .selected = sel,

@@ -53,4 +53,5 @@ public float4 pixelShade(Push* push, Vertex v, uint32_t draw_id, Derivatives d) 
     const float3 Lo = (kD * albedo / float.getPi() + specular) * attenuation * NdotL;
 
     return float4(PBRNeutralToneMapping(Lo), 1.0);
+    // return float4(0.5, 0.5, 0.0, 1.0);
 }

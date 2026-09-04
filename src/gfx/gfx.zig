@@ -407,10 +407,7 @@ pub fn loadGltf(gfx: *Gfx, io: Io, gpa: Allocator, path: []const u8) !Model {
     var meshes: std.ArrayList(Mesh) = .empty;
     for (gltf.data.nodes) |node| {
         const scale: zkf.Vec3 = .fromArray(node.scale);
-        const gl_to_vulkan = zkf.Vec3{ .x = 1, .y = -1, .z = -1 };
-
         const mesh_idx = node.mesh orelse continue;
-
         const mesh = gltf.data.meshes[mesh_idx];
 
         for (mesh.primitives) |primitive| {
@@ -458,11 +455,9 @@ pub fn loadGltf(gfx: *Gfx, io: Io, gpa: Allocator, path: []const u8) !Model {
                 const norm: *const zkf.Vec3 = @ptrCast(@alignCast(norm_it.next().?.ptr));
                 const tex: *const math.Vec2 = @ptrCast(@alignCast(tex_it.next().?.ptr));
 
-                const pos_temp = pos.mul(scale).mul(gl_to_vulkan);
-                const norm_flipped = norm.mul(gl_to_vulkan).normalize();
                 const w: st.Vertex = .{
-                    .pos = pos_temp,
-                    .norm = norm_flipped,
+                    .pos = pos.mul(scale),
+                    .norm = norm.normalize(),
                     .uv = tex.*,
                 };
 
@@ -489,44 +484,6 @@ pub fn addMesh(manager: *Gfx, indices: []const IndexType, vertices: []const st.V
     manager.idx_offset += indices.len * @sizeOf(IndexType);
 
     return mesh;
-}
-
-//TODO:
-pub fn transferToImage(manager: *Gfx, target: ImageHandle, buffer: vk.Buffer, regions: []vk.BufferImageCopy, level_count: u32, layer_count: u32) void {
-    const image = manager.getImage(target);
-
-    const transfer_start_barrier: vk.ImageMemoryBarrier2 = .{
-        .dstStageMask = .{ .all_transfer = true },
-        .dstAccessMask = .{ .transfer_write = true },
-        .oldLayout = .undefined,
-        .newLayout = .transfer_dst_optimal,
-        .image = image,
-        .subresourceRange = .{
-            .aspectMask = .{ .color = true },
-            .levelCount = level_count,
-            .layerCount = layer_count,
-        },
-    };
-    var dep_info: vk.DependencyInfo = .{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = @ptrCast(&transfer_start_barrier) };
-
-    vk.cmdPipelineBarrier2(manager.command_buffer, &.{});
-    vk.cmdCopyBufferToImage(manager.command_buffer, buffer, image, .transfer_dst_optimal, @intCast(regions.len), regions.ptr);
-
-    const texread_barrier: vk.ImageMemoryBarrier2 = .{
-        .srcStageMask = .{ .all_transfer = true },
-        .srcAccessMask = .{ .transfer_write = true },
-        .oldLayout = .transfer_dst_optimal,
-        .newLayout = .read_only_optimal,
-        .image = image,
-        .subresourceRange = .{
-            .aspectMask = .{ .color = true },
-            .levelCount = level_count,
-            .layerCount = layer_count,
-        },
-    };
-
-    dep_info.pImageMemoryBarriers = @ptrCast(&texread_barrier);
-    vk.cmdPipelineBarrier2(manager.command_buffer, &dep_info);
 }
 
 /// sets image and format fields on image view

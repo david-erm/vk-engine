@@ -1,18 +1,11 @@
 const std = @import("std");
 const Io = std.Io;
 
-const vk = @import("vk");
-const gltf = @import("zgltf").Gltf;
-const sdl = @import("sdl.zig");
-const vma = @import("vma.zig");
-const ktx = @import("ktx.zig");
 const math = @import("math.zig");
 
 pub const Vec3 = math.Vec3;
 pub const Quat = math.Quat;
 pub const Pose = math.Pose;
-
-const log = std.log.scoped(.howtovulkan);
 
 pub const Camera = struct {
     const pitch_limit = std.math.pi / 2.0 - 0.1;
@@ -25,13 +18,14 @@ pub const Camera = struct {
     pub fn mouseInput(cam: *Camera, relative_x: f32, relative_y: f32) void {
         const old_pitch = cam.pose.extra;
         const f = cam.sens;
+        const y_thing = -relative_y * f;
 
-        cam.pose.extra += relative_y * f;
+        cam.pose.extra += y_thing;
         if (@abs(cam.pose.extra) > pitch_limit) {
             const diff = @as(f32, std.math.sign(old_pitch)) * pitch_limit - old_pitch;
             cam.pose.rot = cam.pose.rot.mul(.fromAngleAxis(diff, .{ .x = 1 }));
             cam.pose.extra = old_pitch + diff;
-        } else cam.pose.rot = cam.pose.rot.mul(.fromAngleAxis(relative_y * f, .{ .x = 1 }));
+        } else cam.pose.rot = cam.pose.rot.mul(.fromAngleAxis(y_thing, .{ .x = 1 }));
 
         cam.pose.rot = Quat.mul(.fromAngleAxis(-relative_x * f, .{ .y = 1 }), cam.pose.rot);
         cam.pose.rot = cam.pose.rot.normalize();

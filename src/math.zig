@@ -44,7 +44,7 @@ pub const Mat4 = extern struct {
         var result: Mat4 = .zero;
 
         result.data[0][0] = 1.0 / (aspect * tanHalfFovy);
-        result.data[1][1] = 1.0 / tanHalfFovy;
+        result.data[1][1] = -1.0 / tanHalfFovy;
         result.data[2][2] = far / (near - far);
         result.data[2][3] = -1.0;
         result.data[3][2] = -(far * near) / (far - near);
@@ -55,7 +55,7 @@ pub const Mat4 = extern struct {
     pub fn ortho(left: f32, right: f32, bottom: f32, top: f32) Mat4 {
         var result: Mat4 = .indentity;
         result.data[0][0] = 2 / (right - left);
-        result.data[1][1] = 2 / (top - bottom);
+        result.data[1][1] = -2 / (top - bottom);
         result.data[2][2] = -1;
         result.data[3][0] = -(right + left) / (right - left);
         result.data[3][1] = -(top + bottom) / (top - bottom);
